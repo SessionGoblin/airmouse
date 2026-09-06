@@ -5,6 +5,7 @@ from PySide6.QtCore import QTimer
 from airmouse.ui import Window
 from airmouse.config import Settings
 from airmouse.calibration import CalibrationDialog
+from airmouse import input as input_module
 
 app = QApplication.instance() or QApplication([])
 
@@ -29,3 +30,20 @@ def test_calibration_rejects_invalid_hysteresis(monkeypatch,tmp_path):
     assert 'exceed' in dialog.error.text()
     assert not (tmp_path/'settings.json').exists()
     dialog.close()
+
+def test_wayland_hotkeys_scan_event_nodes_when_evdev_discovery_is_empty(monkeypatch):
+    class FakeDevice:
+        def __init__(self, path):
+            self.path = path
+        def capabilities(self):
+            from evdev import ecodes as e
+            return {e.EV_KEY: [e.KEY_F8, e.KEY_F12]}
+        def close(self):
+            pass
+
+    monkeypatch.setattr(input_module, 'wayland', lambda: True)
+    monkeypatch.setattr(input_module, 'glob', lambda pattern: ['/dev/input/event5'])
+    monkeypatch.setattr('evdev.InputDevice', FakeDevice)
+    monkeypatch.setattr(input_module.threading.Thread, 'start', lambda self: None)
+    hotkeys = input_module.Hotkeys(lambda action: None, lambda error: None)
+    assert [device.path for device in hotkeys.devices] == ['/dev/input/event5']

@@ -2,6 +2,7 @@
 import os
 import select
 import threading
+from glob import glob
 from typing import Protocol
 
 class InputBackend(Protocol):
@@ -66,8 +67,12 @@ class Hotkeys:
         self.listener = None
         self.thread = None
         if wayland():
-            from evdev import InputDevice, list_devices, ecodes as e
-            for path in list_devices():
+            from evdev import InputDevice, ecodes as e
+            # evdev 2.0 can return an empty list from list_devices() on some
+            # systems even when individual event nodes are accessible. Scan the
+            # kernel's stable device-node pattern and let InputDevice validate
+            # each candidate instead.
+            for path in sorted(glob('/dev/input/event*')):
                 try:
                     device = InputDevice(path)
                 except OSError:
