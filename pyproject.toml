@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "airmouse-desktop"
+version = "0.1.0"
+description = "Local webcam gesture mouse with guarded desktop control"
+requires-python = ">=3.11"
+dependencies = ["mediapipe==1.0.1", "opencv-contrib-python==5.0.0.93", "PySide6==6.11.2", "pynput==1.8.2", "evdev==2.0.0; sys_platform == 'linux'"]
+[project.optional-dependencies]
+test = ["pytest>=8"]
+[project.scripts]
+airmouse = "airmouse.ui:main"
+[tool.setuptools.packages.find]
+include = ["airmouse*"]

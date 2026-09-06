@@ -1,0 +1,158 @@
+import math
+import pytest
+from airmouse.config import Settings
+from airmouse.gestures import Features, GestureMachine, State
+from airmouse.mapping import CursorMapper, AdaptiveEMA
+from airmouse.controller import Controller
+
+S = Settings()
+NEUTRAL = Features((.5,.5), .8,.8,False)
+PINCH = Features((.5,.5), .1,.8,False)
+RIGHT = Features((.5,.5), .8,.1,False)
+
+def armed():
+    m = GestureMachine()
+    m.step(NEUTRAL,0,S,True)
+    m.step(NEUTRAL,.4,S,True)
+    return m
+
+def test_paused_never_emits_press_or_move():
+    m = GestureMachine()
+    for t in range(10):
+        assert m.step(PINCH,t,S,False) == []
+        assert m.state == State.PAUSED
+
+def test_entering_with_pinch_must_open_before_arming():
+    m = GestureMachine()
+    for t in range(10): assert m.step(PINCH,t,S,True) == []
+    assert not m.armed
+    m.step(NEUTRAL,10,S,True)
+    m.step(NEUTRAL,10.4,S,True)
+    assert m.armed
+
+def test_click_drag_release_once():
+    m = armed()
+    assert m.step(PINCH,1,S,True) == []
+    assert m.step(PINCH,1.1,S,True) == [('down',)]
+    assert m.step(PINCH,1.4,S,True) == [('move', PINCH.point)]
+    assert m.state == State.DRAGGING
+    assert m.step(NEUTRAL,1.5,S,True) == [('up',)]
+    assert m.step(NEUTRAL,1.6,S,True) == [('move',NEUTRAL.point)]
+
+def test_jitter_hysteresis_and_short_pinch():
+    m = armed()
+    m.step(PINCH,1,S,True)
+    assert m.step(NEUTRAL,1.02,S,True) == [('move', NEUTRAL.point)]
+    m.step(PINCH,2,S,True)
+    m.step(PINCH,2.1,S,True)
+    mid = Features((.5,.5),.35,.8,False)
+    assert m.step(mid,2.2,S,True)[0][0] == 'move'
+    assert m.down
+
+@pytest.mark.parametrize('paused',[True,False])
+def test_tracking_loss_and_pause_release_drag(paused):
+    m = armed()
+    m.step(PINCH,1,S,True)
+    m.step(PINCH,1.1,S,True)
+    assert m.step(None,1.2,S,not paused) == [('up',)]
+    assert not m.armed
+    assert m.step(None,1.3,S,not paused) == []
+
+def test_right_click_is_latched_until_open():
+    m = armed()
+    m.step(RIGHT,1,S,True)
+    assert m.step(RIGHT,1.1,S,True) == [('right',)]
+    for t in (2,3,4): assert ('right',) not in m.step(RIGHT,t,S,True)
+    m.step(NEUTRAL,5,S,True)
+    m.step(RIGHT,6,S,True)
+    assert m.step(RIGHT,6.1,S,True) == [('right',)]
+
+def test_scroll_requires_dwell_and_freezes_cursor():
+    m = armed()
+    f = Features((.5,.5),.8,.8,True)
+    assert m.step(f,1,S,True) == []
+    assert m.step(f,1.2,S,True) == []
+    assert m.step(f,1.4,S,True) == []
+    assert m.step(Features((.5,.4),.8,.8,True),1.5,S,True) == [('scroll',3)]
+    assert m.state == State.SCROLLING
+
+def test_gestures_can_be_disabled():
+    s = Settings(left=False,right=False,scroll=False)
+    m = armed()
+    for f in (PINCH, RIGHT, Features((.5,.2),.8,.8,True)):
+        assert m.step(f,1,s,True) == [('move',f.point)]
+
+def test_mapping_edges_negative_desktop_and_clamps():
+    mapper = CursorMapper((-1920,0,3840,1080))
+    assert mapper.target((S.margin,S.margin),S) == (-1920,0)
+    assert mapper.target((1-S.margin,1-S.margin),S) == (1919,1079)
+    assert mapper.target((-1,2),S) == (-1920,1079)
+
+def test_filter_jitter_and_convergence():
+    f = AdaptiveEMA()
+    f.reset((500,500))
+    assert f.update((501,500),.03,.09,2.5) == (500,500)
+    first = f.update((1000,500),.03,.09,2.5)
+    assert 500 < first[0] < 1000
+    for _ in range(100): last = f.update((1000,500),.03,.09,2.5)
+    assert abs(last[0]-1000)<3
+
+class FakeInput:
+    def __init__(self): self.events=[]
+    def move(self,*p): self.events.append(('move',p))
+    def down(self): self.events.append(('down',))
+    def up(self): self.events.append(('up',))
+    def right(self): self.events.append(('right',))
+    def scroll(self,n): self.events.append(('scroll',n))
+    def close(self): pass
+
+def test_controller_emergency_releases_and_blocks_late_frames():
+    backend = FakeInput()
+    c = Controller(S,(0,0,1920,1080),backend)
+    c.resume()
+    for t in (0,.1,.2,.4): c.process(NEUTRAL,t)
+    c.process(PINCH,.5)
+    c.process(PINCH,.6)
+    assert ('down',) in backend.events
+    c.pause()
+    count = len(backend.events)
+    for t in (.7,.8,1): c.process(PINCH,t)
+    assert len(backend.events) == count
+    assert backend.events[-1] == ('up',)
+
+def test_initial_movement_is_speed_limited():
+    backend = FakeInput()
+    c = Controller(S,(0,0,1920,1080),backend)
+    c.resume()
+    edge = Features((1,1),.8,.8,False)
+    for t in (0,.1,.2,.4,.43): c.process(edge,t)
+    point = backend.events[-1][1]
+    assert math.dist((960,540),point) < 110
+
+def test_bad_calibration_rejected():
+    with pytest.raises(ValueError): Settings(pinch=.5,release=.2).validate()
+    with pytest.raises(ValueError): Settings(smoothing=float('nan')).validate()
+
+def test_stalled_processing_releases_drag_and_requires_reacquisition():
+    backend = FakeInput()
+    c = Controller(S,(0,0,1920,1080),backend)
+    c.resume()
+    for t in (0,.1,.2,.4): c.process(NEUTRAL,t)
+    c.process(PINCH,.5)
+    c.process(PINCH,.6)
+    assert c.machine.down
+    c.process(PINCH,2)
+    assert backend.events[-1] == ('up',)
+    assert not c.machine.armed
+    c.process(PINCH,2.1)
+    assert not c.machine.down
+
+def test_cooldown_prevents_immediate_second_press():
+    m = armed()
+    m.step(PINCH,1,S,True)
+    m.step(PINCH,1.1,S,True)
+    m.step(NEUTRAL,1.2,S,True)
+    m.step(PINCH,1.21,S,True)
+    assert m.step(PINCH,1.31,S,True) == []
+    assert not m.down
+    assert m.step(PINCH,1.6,S,True) == [('down',)]
