@@ -31,6 +31,10 @@ Use good lighting, a visible palm, and one hand. Hand selection is limited to on
 
 ## Gestures and safety
 
+Precision improvements: cursor filtering retains subpixel motion, so slow aiming is no longer rounded away each frame. Closing a pinch anchors the drag at the existing cursor position. The cursor stays still until movement exceeds **Drag start distance** (10 screen pixels by default, adjustable in calibration); subsequent drag motion is relative to that anchor. Increase this distance if clicks accidentally become drags.
+
+Holding a right pinch freezes the cursor until release. Scrolling now requires straight index/middle fingers and clearly bent ring/little fingers, and tolerates 120 ms of pose flicker without moving the pointer. Nonfinite detections and abrupt quarter-frame jumps within 120 ms are discarded and require neutral reacquisition; this can briefly interrupt exceptionally fast hand motions. Reacquisition starts from the last cursor position instead of the screen center.
+
 | Action | Gesture / key |
 | --- | --- |
 | Move | Index fingertip in the green active region |

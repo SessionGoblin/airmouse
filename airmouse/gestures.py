@@ -26,8 +26,12 @@ class Features:
             return math.hypot((points[a][0]-points[b][0])*aspect, points[a][1]-points[b][1])
         scale = max(distance(0, 9), .02)
         extended = {tip: distance(0, tip) > distance(0, tip-2)*1.18 for tip in (8, 12, 16, 20)}
+        plane = [(p[0]*aspect,p[1],0) for p in points]
+        angles = {tip: joint_angle(plane,tip-3,tip-2,tip) for tip in (8,12,16,20)}
         return cls(points[8][:2], distance(4, 8)/scale, distance(4, 12)/scale,
-                   extended[8] and extended[12] and not extended[16] and not extended[20])
+                   extended[8] and extended[12] and angles[8] > 155 and angles[12] > 155
+                   and angles[16] < 135 and angles[20] < 135
+                   and not extended[16] and not extended[20])
 
 class GestureMachine:
     def __init__(self):
@@ -41,6 +45,7 @@ class GestureMachine:
         self.right_latched = False
         self.scroll_y = None
         self.pressed_at = 0
+        self.scroll_exit = None
 
     def reset(self, paused=True):
         actions = [('up',)] if self.down else []
@@ -63,6 +68,10 @@ class GestureMachine:
             return []
         if f.right > settings.release:
             self.right_latched = False
+        elif self.right_latched and settings.right:
+            # Holding a right pinch must not move the newly opened menu.
+            self.state = State.RIGHT_CLICK
+            return []
         if self.down:
             if f.left >= settings.release or not settings.left:
                 self.down = False
@@ -72,12 +81,21 @@ class GestureMachine:
                 return [('up',)]
             self.state = State.DRAGGING if now-self.pressed_at > .22 else State.PINCH_DOWN
             return [('move', f.point)]
+        if self.state == State.SCROLLING and settings.scroll:
+            if not f.scroll:
+                if self.scroll_exit is None:
+                    self.scroll_exit = now
+                if now-self.scroll_exit < .12:
+                    return []
+            else:
+                self.scroll_exit = None
         desired = ('left' if settings.left and f.left < settings.pinch else
                    'right' if settings.right and f.right < settings.pinch and not self.right_latched else
                    'scroll' if settings.scroll and f.scroll and f.left > settings.release and f.right > settings.release else None)
         if desired != self.candidate:
             self.candidate, self.since = desired, now
             self.scroll_y = None
+            self.scroll_exit = None
         if desired:
             # Freeze cursor while confirming an intentional gesture.
             if now-self.since < (settings.dwell if desired == 'scroll' else settings.debounce):

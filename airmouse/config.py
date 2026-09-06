@@ -11,6 +11,7 @@ class Settings:
     sensitivity: float = 1.0
     smoothing: float = .09
     deadzone: float = 2.5
+    drag_deadzone: float = 10.0
     pinch: float = .28
     release: float = .42
     debounce: float = .08
@@ -22,7 +23,7 @@ class Settings:
 
     def validate(self):
         limits = {'camera': (0, 32), 'margin': (.05, .4), 'sensitivity': (1, 2),
-                  'smoothing': (.01, .4), 'deadzone': (0, 20), 'pinch': (.1, .5),
+                  'smoothing': (.01, .4), 'deadzone': (0, 20), 'drag_deadzone': (2, 40), 'pinch': (.1, .5),
                   'release': (.15, .8), 'debounce': (.03, .5), 'cooldown': (.1, 2), 'dwell': (.2, 2)}
         for key, (lo, hi) in limits.items():
             value = getattr(self, key)

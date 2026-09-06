@@ -14,3 +14,7 @@ Tested on the current Linux Wayland host on 2026-09-06.
 Not verified: actual OS mouse injection or global F8/F12 on this host (device permissions unavailable), interactive human gesture accuracy, click/drag feel, different Wayland compositors, Windows/macOS, mixed-DPI desktops, or extended-session performance. Mouse actions were verified with a recording test backend. No mouse control was enabled during validation.
 
 Upper-body tracking remains an optional future extension.
+
+## Precision update
+
+Added regression checks for anchored pinch/drag behavior, retained subpixel motion, invalid detection release, isolated tracking jumps, cursor position on reacquisition, stationary context-menu targeting, and scroll-pose flicker. The earlier keyboard discovery issue was fixed and the readable Logitech keyboard listener and virtual-pointer initialization subsequently passed on this host. Full human gesture accuracy and compositor mouse behavior still require interactive validation; automated input tests use a recording backend.

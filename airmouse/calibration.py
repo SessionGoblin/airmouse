@@ -13,6 +13,7 @@ class CalibrationDialog(QDialog):
                   ('sensitivity', 'Sensitivity', 1, 2, .05),
                   ('smoothing', 'Smoothing time (seconds)', .01, .4, .01),
                   ('deadzone', 'Cursor dead zone (pixels)', 0, 20, .5),
+                  ('drag_deadzone', 'Drag start distance (pixels)', 2, 40, 1),
                   ('pinch', 'Pinch / palm ratio', .1, .5, .01),
                   ('release', 'Release / palm ratio', .15, .8, .01),
                   ('debounce', 'Pinch confirmation (seconds)', .03, .5, .01),

@@ -31,4 +31,5 @@ class CursorMapper:
         target = self.target(point, settings)
         result = self.filter.update(target, dt, settings.smoothing, settings.deadzone)
         x, y, w, h = self.bounds
-        return round(min(x+w-1, max(x, result[0]))), round(min(y+h-1, max(y, result[1])))
+        # Keep subpixel progress; only the input boundary should round pixels.
+        return min(x+w-1, max(x, result[0])), min(y+h-1, max(y, result[1]))
