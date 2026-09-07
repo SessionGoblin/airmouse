@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 
+from . import poses
+
 SCROLL_ENGAGE = .15   # seconds holding the pose before scrolling starts
 SCROLL_GAIN = 50      # wheel steps per unit of normalized vertical hand travel
 SCROLL_STEP_CAP = 6   # max wheel steps emitted per frame
@@ -15,6 +17,7 @@ class State(str, Enum):
     RELEASE = 'release'
     RIGHT_CLICK = 'right-click'
     SCROLLING = 'scrolling'
+    CUSTOM = 'custom-pose'
     PAUSED = 'paused'
 
 @dataclass
@@ -23,6 +26,10 @@ class Features:
     left: float
     right: float
     scroll: bool
+    # Whole-hand shape for custom templates. Defaulted so the built-in gestures
+    # can still be exercised with a bare four-field Features.
+    pose: tuple = None
+    orientation: float = None
 
     @classmethod
     def from_landmarks(cls, points, aspect=4/3):
@@ -36,13 +43,16 @@ class Features:
         # are and how tightly the others are curled; the structural guards
         # (index+middle up, ring+little folded) still keep pointing and an open
         # palm from being read as a scroll.
+        pose, orientation = poses.normalize(points, aspect)
         return cls(points[8][:2], distance(4, 8)/scale, distance(4, 12)/scale,
                    extended[8] and extended[12] and angles[8] > 150 and angles[12] > 150
                    and angles[16] < 145 and angles[20] < 145
-                   and not extended[16] and not extended[20])
+                   and not extended[16] and not extended[20],
+                   pose, orientation)
 
 class GestureMachine:
-    def __init__(self):
+    def __init__(self, library=None):
+        self.library = library
         self.state = State.PAUSED
         self.down = False
         self.armed = False
@@ -54,10 +64,12 @@ class GestureMachine:
         self.scroll_y = None
         self.pressed_at = 0
         self.scroll_exit = None
+        self.custom_latched = False
+        self.custom_template = None
 
     def reset(self, paused=True):
         actions = [('up',)] if self.down else []
-        self.__init__()
+        self.__init__(self.library)     # templates survive a reset
         self.state = State.PAUSED if paused else State.IDLE
         return actions
 
@@ -97,7 +109,22 @@ class GestureMachine:
                     return []
             else:
                 self.scroll_exit = None
-        desired = ('left' if settings.left and f.left < settings.pinch else
+        # Custom poses are tested before the pinches. A deliberate whole-hand
+        # shape is the stronger signal, and the pinch thresholds are permissive
+        # enough that shapes like a closed fist read as a click. The recorder
+        # warns when a template shadows a built-in, so anything that got saved
+        # was accepted knowing that.
+        template = self.library.match(f.pose, f.orientation) if (
+            self.library is not None and settings.custom) else None
+        if template is None:
+            self.custom_latched = False
+        elif self.custom_latched:
+            # Hold the pose without re-firing, and do not move the cursor.
+            self.state = State.CUSTOM
+            return []
+        self.custom_template = template
+        desired = ('custom:'+template.name if template is not None else
+                   'left' if settings.left and f.left < settings.pinch else
                    'right' if settings.right and f.right < settings.pinch and not self.right_latched else
                    'scroll' if settings.scroll and f.scroll and f.left > settings.release and f.right > settings.release else None)
         if desired != self.candidate:
@@ -106,7 +133,10 @@ class GestureMachine:
             self.scroll_exit = None
         if desired:
             # Freeze cursor while confirming an intentional gesture.
-            if now-self.since < (SCROLL_ENGAGE if desired == 'scroll' else settings.debounce):
+            hold = (SCROLL_ENGAGE if desired == 'scroll' else
+                    settings.custom_dwell if desired.startswith('custom:') else
+                    settings.debounce)
+            if now-self.since < hold:
                 return []
             if desired == 'scroll':
                 self.state = State.SCROLLING
@@ -123,6 +153,11 @@ class GestureMachine:
             if now-self.last_action < settings.cooldown:
                 return []
             self.last_action = now
+            if desired.startswith('custom:'):
+                # Latch so holding the pose fires once rather than every frame.
+                self.custom_latched = True
+                self.state = State.CUSTOM
+                return [('custom', self.custom_template)]
             if desired == 'left':
                 self.down, self.pressed_at = True, now
                 self.state = State.PINCH_DOWN

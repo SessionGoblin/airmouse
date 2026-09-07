@@ -23,6 +23,10 @@ class Settings:
     right: bool = True
     scroll: bool = True
     hold_fps: bool = True
+    custom: bool = True
+    # Longer than the pinch debounce: a custom pose can run a command, so a
+    # false positive costs more than a stray click.
+    custom_dwell: float = .45
 
     def validate(self):
         for key in ('camera_width', 'camera_height'):
@@ -31,14 +35,15 @@ class Settings:
                 raise ValueError(f'Invalid {key}')
         limits = {'camera': (0, 32), 'margin': (.05, .4), 'sensitivity': (1, 2),
                   'smoothing': (.01, .4), 'deadzone': (0, 20), 'drag_deadzone': (2, 40), 'pinch': (.1, .5),
-                  'release': (.15, .8), 'debounce': (.03, .5), 'cooldown': (.1, 2), 'dwell': (.2, 2)}
+                  'release': (.15, .8), 'debounce': (.03, .5), 'cooldown': (.1, 2), 'dwell': (.2, 2),
+                  'custom_dwell': (.15, 3)}
         for key, (lo, hi) in limits.items():
             value = getattr(self, key)
             if not isinstance(value, (int, float)) or not lo <= value <= hi:
                 raise ValueError(f'Invalid {key}')
         if self.release <= self.pinch:
             raise ValueError('Release threshold must exceed pinch threshold')
-        for key in ('left', 'right', 'scroll', 'hold_fps'):
+        for key in ('left', 'right', 'scroll', 'hold_fps', 'custom'):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f'Invalid {key}')
         self.camera = int(self.camera)
