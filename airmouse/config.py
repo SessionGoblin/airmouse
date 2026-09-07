@@ -22,6 +22,7 @@ class Settings:
     left: bool = True
     right: bool = True
     scroll: bool = True
+    hold_fps: bool = True
 
     def validate(self):
         for key in ('camera_width', 'camera_height'):
@@ -37,7 +38,7 @@ class Settings:
                 raise ValueError(f'Invalid {key}')
         if self.release <= self.pinch:
             raise ValueError('Release threshold must exceed pinch threshold')
-        for key in ('left', 'right', 'scroll'):
+        for key in ('left', 'right', 'scroll', 'hold_fps'):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f'Invalid {key}')
         self.camera = int(self.camera)

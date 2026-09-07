@@ -60,7 +60,8 @@ class VisionWorker:
         try:
             tracker = HandTracker()
             settings = self.controller.settings
-            camera = Camera(settings.camera, settings.camera_width, settings.camera_height)
+            camera = Camera(settings.camera, settings.camera_width, settings.camera_height,
+                            hold_fps=settings.hold_fps)
             previous = time.monotonic()
             while not self.stop_event.is_set():
                 if camera.error: raise RuntimeError(camera.error)

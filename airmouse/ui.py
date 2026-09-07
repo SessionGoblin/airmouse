@@ -71,6 +71,13 @@ class Window(QMainWindow):
             if size == selected: self.resolution.setCurrentIndex(self.resolution.count()-1)
         self.resolution.setToolTip('Requested capture size. Stop preview to change it; the camera may use a different size.')
         form.addRow('Resolution', self.resolution)
+        self.hold_fps = QCheckBox('Hold frame rate in low light')
+        self.hold_fps.setChecked(self.settings.hold_fps)
+        self.hold_fps.setToolTip(
+            'When on, webcams that drop to 15 FPS for brightness are asked to stay at 30 FPS. '
+            'The preview may look darker. Stop preview to change this.')
+        self.hold_fps.toggled.connect(lambda value: self.setting('hold_fps', value))
+        form.addRow(self.hold_fps)
         self.start_button = QPushButton('Start preview')
         self.start_button.clicked.connect(self.start_stop)
         form.addRow(self.start_button)
@@ -221,6 +228,7 @@ class Window(QMainWindow):
         self.start_button.setText('Stop camera')
         self.camera.setEnabled(False)
         self.resolution.setEnabled(False)
+        self.hold_fps.setEnabled(False)
         self.status.setText('PAUSED • starting camera and model…')
 
     def stop(self):
@@ -232,6 +240,7 @@ class Window(QMainWindow):
         self.start_button.setText('Start preview')
         self.camera.setEnabled(True)
         self.resolution.setEnabled(True)
+        self.hold_fps.setEnabled(True)
         self.resume_button.setEnabled(False)
         self.status.setText('PAUSED • camera stopped')
 
