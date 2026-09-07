@@ -55,7 +55,19 @@ Pinches require continuous confirmation (80 ms default). Pointer motion freezes 
 
 Roles are assigned by position and motion, never by the model's handedness label: that classifier flickers exactly when two hands are close or overlapping, which is when a swap would be most damaging. Each hand is matched to where its role is predicted to be, so hands reaching across each other keep their roles through the crossing; two hands crossing at mirrored speeds are momentarily coincident and genuinely ambiguous. A role keeps its slot for 0.4 s after its hand leaves, so a brief dropout does not reshuffle. A lone hand always takes the pointer. **Pointer** selects which side seeds the cursor when both hands first appear — position in the mirrored preview, so your right hand is on the right whatever the label says.
 
-The modifier hand gates drawn gestures (below). Costs frame rate: with two hands enabled the model keeps hunting for a second hand whenever only one is visible, so watch the FPS in the status line and turn it off if it hurts.
+The modifier hand gates drawn gestures and carries its own poses (below). Costs frame rate: with two hands enabled the model keeps hunting for a second hand whenever only one is visible, so watch the FPS in the status line and turn it off if it hurts.
+
+### Modifier poses and modes
+
+A recorded pose can be read from either hand. Choose **Modifier hand** in the gesture list before recording, and the pose is matched against your off hand instead of the pointer.
+
+A held modifier pose is also a **mode**, and that is what makes it a modifier rather than a second pose slot. Pointer poses and drawn strokes can be scoped with **Only while** / **Only under**, so three modifier poses multiply the gestures you already have instead of adding three more to remember. Unscoped gestures keep working in every mode — holding a modifier never switches off your ordinary gestures — and a scoped gesture outranks an unscoped one of the same shape, since the more specific binding is the one you raised the modifier for.
+
+Mark a modifier pose **Holding this opens stroke drawing** to replace the built-in modifier pinch. Strokes can then be scoped per gate, so the same shape drawn under two different modifier poses means two different things. A gate pose does not also run its own binding; it is a mode, not an event.
+
+A chord costs two confirmations in sequence — the modifier must settle before the scoped pose becomes eligible — so it takes about twice **Custom pose confirmation** to fire. That is the price of not triggering chords on a modifier shape passing through on its way somewhere else; lower `custom_dwell` in calibration if it feels slow. The current mode is shown in the status line and in `--debug`.
+
+Because roles select the hand, the same shape can mean one thing on the pointer and another on the modifier without conflicting, and poses stay hand-agnostic — role assignment already picks the hand by position, so locking the mirror as well would only break things when you raise your hands in the other order.
 
 ## Drawn gestures
 

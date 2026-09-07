@@ -2,7 +2,7 @@ import threading
 import math
 from .gestures import GestureMachine, State
 from .mapping import CursorMapper
-from . import strokes as strokes_module
+from . import poses as poses_module, strokes as strokes_module
 
 class Controller:
     """Serialized control gate, including emergency release from keyboard thread."""
@@ -18,6 +18,15 @@ class Controller:
         # the poses use. Set by the worker once the frame size is known.
         self.aspect = 4/3
         self.last_stroke = (None, 0.0)
+        # Name of the modifier pose currently held. Pointer poses and strokes
+        # scope to it, which is what makes the off hand a modifier rather than
+        # a second pose slot.
+        self.mode = None
+        self.mode_latch = poses_module.PoseLatch()
+        # The mode that was held while a stroke was being drawn. Recognition
+        # happens on the frame the gate opens, by which point the gate pose is
+        # already released and self.mode has cleared.
+        self.stroke_mode = None
         self.lock = threading.RLock()
         self.enabled = False
         self.last = None
@@ -43,6 +52,9 @@ class Controller:
                 self.drag_started = False
                 self.raw_point = None
                 self.capture.reset()
+                self.mode = None
+                self.mode_latch.reset()
+                self.stroke_mode = None
 
     def resume(self):
         with self.lock:
@@ -74,14 +86,18 @@ class Controller:
             dt = min(.1, now-self.last) if self.last is not None else 1/30
             self.last = now
             self.last_seen = now if features else None
+            self.update_mode(modifier, now)
             # The modifier hand gates stroke drawing. Without a gate a
             # recognizer running over the cursor path would fire during
             # ordinary pointing, because here the pointer is the hand.
-            gating = bool(self.settings.strokes and self.enabled and modifier is not None
-                          and modifier.left < self.settings.pinch)
+            gating = bool(self.settings.strokes and self.enabled
+                          and self.drawing_gate(modifier))
+            if gating:
+                self.stroke_mode = self.mode
             drawn = self.capture.update(gating, features.point if features else None)
             if drawn is not None:
-                self.recognize(drawn)
+                self.recognize(drawn, self.stroke_mode)
+                self.stroke_mode = None
             if gating:
                 # Freeze the cursor while drawing, and drop a drag rather than
                 # smearing the window along the stroke.
@@ -99,7 +115,7 @@ class Controller:
                 if self.backend and hasattr(self.backend, 'mouse'):
                     origin = tuple(self.backend.mouse.position)
                 self.mapper.filter.reset(self.mapper.visible_point(origin))
-            actions = self.machine.step(features, now, self.settings, self.enabled)
+            actions = self.machine.step(features, now, self.settings, self.enabled, self.mode)
             for action in actions:
                 # Ahead of the backend guard: a keystroke or shell binding does
                 # not need a pointer device to be useful.
@@ -151,7 +167,37 @@ class Controller:
                 else: getattr(self.backend, action[0])()
             return self.machine.state.value
 
-    def recognize(self, path):
+    def update_mode(self, modifier, now):
+        """Read the modifier hand's held pose and publish it as the mode."""
+        template = None
+        if (self.machine.library is not None and self.settings.custom
+                and self.enabled and modifier is not None):
+            template = self.machine.library.match(
+                modifier.pose, modifier.orientation, modifier.chirality, role='modifier')
+        fired = self.mode_latch.update(template, now, self.settings.custom_dwell)
+        held = self.mode_latch.template
+        self.mode = held.name if held is not None else None
+        # A gate pose is a mode, not an event: firing its binding as well would
+        # run the action every time drawing starts.
+        if fired is not None and not fired.gates_drawing:
+            self.custom(fired)
+
+    def drawing_gate(self, modifier):
+        """Whether the modifier hand is asking to draw.
+
+        A recorded gate pose wins once one exists; the built-in pinch remains
+        the fallback so drawing works before anything has been recorded. Using
+        a pose as the gate also means the mode during a stroke is the gating
+        pose, which is what lets strokes be scoped per gate.
+        """
+        if modifier is None:
+            return False
+        gates = self.machine.library.gates() if self.machine.library is not None else set()
+        if gates:
+            return self.mode in gates
+        return modifier.left < self.settings.pinch
+
+    def recognize(self, path, mode=None):
         """Score a finished stroke and run whatever it is bound to."""
         points = strokes_module.canonical(path, self.aspect)
         if self.stroke_library is None or points is None:
@@ -159,7 +205,7 @@ class Controller:
             return
         nearest, rating = self.stroke_library.nearest(points)
         self.last_stroke = (nearest.name if nearest else None, rating)
-        stroke = self.stroke_library.match(points)
+        stroke = self.stroke_library.match(points, mode=mode)
         if stroke is not None:
             self.custom(stroke)
 

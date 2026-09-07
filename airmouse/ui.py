@@ -39,7 +39,6 @@ class Window(QMainWindow):
                                      screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens],
                                      library=self.library, dispatcher=self.dispatcher,
                                      stroke_library=self.stroke_library)
-        self.last_features = (None, None)
         self.last_hands = ([], None)
         self.worker = self.keys = None
         self.calibrating = False
@@ -305,7 +304,7 @@ class Window(QMainWindow):
         self.calibrating = True
         try:
             from .recorder import GestureDialog
-            dialog = GestureDialog(self.library, self.settings, lambda: self.last_features, self)
+            dialog = GestureDialog(self.library, self.settings, lambda: self.last_hands, self)
             if dialog.exec():
                 self.library = dialog.library
                 # The machine holds the library directly, and reset() re-runs
@@ -320,7 +319,9 @@ class Window(QMainWindow):
         self.calibrating = True
         try:
             from .recorder import StrokeDialog
-            dialog = StrokeDialog(self.stroke_library, lambda: self.last_hands, self)
+            dialog = StrokeDialog(self.stroke_library, lambda: self.last_hands, self,
+                                  gates=sorted(self.library.gates()),
+                                  pose_library=self.library)
             if dialog.exec():
                 self.stroke_library = dialog.library
                 self.controller.stroke_library = self.stroke_library
@@ -403,7 +404,6 @@ class Window(QMainWindow):
         item = self.worker.take()
         if not item: return
         frame, hands, features, state, fps, captured = item
-        self.last_features = (features, time.monotonic())
         pointer = roles.by_role(hands, roles.POINTER)
         points = pointer.points if pointer else None
         self.last_hands = (hands, time.monotonic())
@@ -424,7 +424,8 @@ class Window(QMainWindow):
         resolution = f'{captured[0]} × {captured[1]}'
         if captured != requested:
             resolution += f' (requested {requested[0]} × {requested[1]})'
-        self.status.setText(f'{"ACTIVE" if enabled else "PAUSED"} • {state} • {tracking} • {resolution} • {fps:.0f} FPS')
+        mode = f' • mode {self.controller.mode}' if self.controller.mode else ''
+        self.status.setText(f'{"ACTIVE" if enabled else "PAUSED"} • {state}{mode} • {tracking} • {resolution} • {fps:.0f} FPS')
         if state != self.previous_state:
             self.transitions.append(f'{time.strftime("%H:%M:%S")} {self.previous_state or "start"} → {state}')
             self.transitions = self.transitions[-6:]
@@ -470,13 +471,15 @@ class Window(QMainWindow):
                 and features.chirality != template.chirality):
             verdict = 'shape ok, wrong hand'
         armed = 'armed' if self.controller.machine.armed else 'NOT armed (hold an open hand)'
+        mode = self.controller.mode
         from . import poses as _poses
         turn = _poses.winding(features.pose)
         hand = ('either' if template.chirality is None else
                 f'locked, this hand {features.chirality}')
         return (f'Nearest pose "{template.name}" {gap:.3f} / {template.threshold:.3f} '
                 f'-> {verdict} • {armed}\n'
-                f'Palm winding {turn:+.2f} (ambiguous under {_poses.AMBIGUOUS}) • hand {hand}\n')
+                f'Palm winding {turn:+.2f} (ambiguous under {_poses.AMBIGUOUS}) • hand {hand}\n'
+                f'Modifier mode: {mode or "none"}\n')
 
     def closeEvent(self, event):
         self.stop()

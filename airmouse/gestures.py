@@ -87,7 +87,7 @@ class GestureMachine:
         self.state = State.IDLE
         return [('up',)] if held else []
 
-    def step(self, f, now, settings, enabled):
+    def step(self, f, now, settings, enabled, mode=None):
         if not enabled or f is None:
             return self.reset(paused=not enabled)
         if self.present_since is None:
@@ -128,7 +128,8 @@ class GestureMachine:
         # enough that shapes like a closed fist read as a click. The recorder
         # warns when a template shadows a built-in, so anything that got saved
         # was accepted knowing that.
-        template = self.library.match(f.pose, f.orientation, f.chirality) if (
+        template = self.library.match(f.pose, f.orientation, f.chirality,
+                                      role='pointer', mode=mode) if (
             self.library is not None and settings.custom) else None
         if template is None:
             self.custom_latched = False

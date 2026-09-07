@@ -22,14 +22,32 @@ STABLE_MOVE = .05
 FRESH = .3             # features older than this mean the camera stopped
 
 
+def pose_label(template):
+    """One list row. Shared by the full rebuild and the in-place edit, which
+    previously formatted rows separately and drifted apart."""
+    summary = template.argument or 'unbound'
+    if template.role == 'modifier':
+        return f'{template.name} — ' + (
+            'gates drawing' if template.gates_drawing else summary) + ' [modifier]'
+    if template.when:
+        return f'{template.name} — {summary} [while "{template.when}"]'
+    return f'{template.name} — {summary}'
+
+
+def stroke_label(stroke):
+    suffix = f' [under "{stroke.when}"]' if stroke.when else ''
+    return f'{stroke.name} — {stroke.argument or "unbound"}{suffix}'
+
+
 class RecordDialog(QDialog):
     """Countdown, then average the frames held steady into one template."""
 
-    def __init__(self, source, name, parent=None):
+    def __init__(self, source, name, parent=None, role='pointer'):
         super().__init__(parent)
         self.setWindowTitle(f'Recording "{name}"')
-        self.source = source            # callable -> (features, timestamp)
+        self.source = source            # callable -> (hands, timestamp)
         self.name = name
+        self.role = role
         self.template = None
         self.samples = []
         self.orientations = []
@@ -42,7 +60,9 @@ class RecordDialog(QDialog):
         self.message.setAlignment(Qt.AlignCenter)
         self.message.setStyleSheet('font-size: 20px; padding: 18px')
         layout.addWidget(self.message)
-        self.detail = QLabel('Hold the pose steady where the camera can see your whole hand.')
+        which = 'modifier' if role == 'modifier' else 'pointer'
+        self.detail = QLabel(f'Hold the pose steady with your {which} hand, where the camera '
+                             'can see all of it.')
         self.detail.setWordWrap(True)
         layout.addWidget(self.detail)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
@@ -53,10 +73,13 @@ class RecordDialog(QDialog):
         self.timer.start(25)
 
     def sample(self):
-        features, stamp = self.source()
+        from . import roles
+        hands, stamp = self.source()
+        hand = roles.by_role(hands or (), self.role)
+        features = hand.features if hand else None
         elapsed = time.monotonic() - self.started
         if features is None or stamp is None or time.monotonic()-stamp > FRESH:
-            self.message.setText('No hand visible')
+            self.message.setText(f'No {self.role} hand visible')
             # A hand that disappears restarts the countdown rather than
             # averaging across the gap.
             self.started = time.monotonic()
@@ -90,10 +113,14 @@ class RecordDialog(QDialog):
                                 'holding the pose still under even lighting.')
             return
         self.template = poses.build(self.name, self.samples, self.orientations,
-                                    self.chiralities)
+                                    self.chiralities, role=self.role)
         self.accept()
 
     def shadows(self, settings):
+        # Only the pointer hand runs the built-in gestures, so a modifier pose
+        # cannot shadow clicking however tightly it is pinched.
+        if self.role == 'modifier':
+            return []
         """Built-in gestures this recorded pose would also trigger.
 
         Checked against the pose's own measured pinch ratios rather than by
@@ -140,6 +167,13 @@ class GestureDialog(QDialog):
         # Wrap both in lambdas: clicked emits `checked`, and PySide hands it to
         # any slot whose signature can accept an argument, so connecting
         # record() directly passed a bool as `existing`.
+        self.hand_role = QComboBox()
+        for key, label in [('pointer', 'Pointer hand'), ('modifier', 'Modifier hand')]:
+            self.hand_role.addItem(label, key)
+        self.hand_role.setToolTip('Which hand a new recording reads from. A modifier pose is '
+                                  'also a mode: pointer poses and drawn strokes can be scoped '
+                                  'to it.')
+        left.addWidget(self.hand_role)
         self.record_button = QPushButton('Record new pose…')
         self.record_button.clicked.connect(lambda: self.record(None))
         left.addWidget(self.record_button)
@@ -169,6 +203,17 @@ class GestureDialog(QDialog):
             self.app_action.addItem(label, key)
         self.app_action.currentIndexChanged.connect(self.store)
         form.addRow('Command', self.app_action)
+        self.when = QComboBox()
+        self.when.setToolTip('Only fire while this modifier pose is held. Any mode also '
+                             'matches with no modifier raised at all.')
+        self.when.currentIndexChanged.connect(self.store)
+        form.addRow('Only while', self.when)
+        self.gates = QCheckBox('Holding this opens stroke drawing')
+        self.gates.setToolTip('Replaces the built-in modifier pinch. Strokes can then be scoped '
+                              'to this gate, so the same shape means different things under '
+                              'different modifier poses.')
+        self.gates.toggled.connect(self.store)
+        form.addRow(self.gates)
         self.hand = QCheckBox('Only match with the hand it was recorded with')
         self.hand.setToolTip('Off by default, so a pose works with either hand. Turn on to give '
                              'each hand its own gesture. Depends on seeing the palm, so it is '
@@ -203,9 +248,7 @@ class GestureDialog(QDialog):
         self.list.blockSignals(True)
         self.list.clear()
         for template in self.library.templates:
-            summary = {'key': template.argument, 'shell': template.argument,
-                       'app': template.argument}.get(template.action, 'unbound')
-            self.list.addItem(f'{template.name} — {summary}')
+            self.list.addItem(pose_label(template))
         if select is not None:
             self.list.setCurrentRow(select)
         elif self.library.templates:
@@ -216,22 +259,38 @@ class GestureDialog(QDialog):
     def select(self, row):
         template = self.current()
         for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
-                       self.rerecord, self.delete):
+                       self.when, self.gates, self.rerecord, self.delete):
             widget.setEnabled(template is not None)
         if template is None:
             self.warning.clear()
             return
-        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand):
+        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
+                       self.when, self.gates):
             widget.blockSignals(True)
+        self.reload_modes(template)
         self.kind.setCurrentIndex(max(0, self.kind.findData(template.action or 'none')))
         self.argument.setText(template.argument if template.action != 'app' else '')
         if template.action == 'app':
             self.app_action.setCurrentIndex(max(0, self.app_action.findData(template.argument)))
         self.tilt.setChecked(template.orientation is not None)
         self.hand.setChecked(template.chirality is not None)
-        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand):
+        self.gates.setChecked(template.gates_drawing)
+        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
+                       self.when, self.gates):
             widget.blockSignals(False)
+        modifier = template.role == 'modifier'
+        self.gates.setVisible(modifier)
+        self.when.setVisible(not modifier)
         self.kind_changed()
+
+    def reload_modes(self, template):
+        """Fill the scoping list with the modifier poses available as modes."""
+        self.when.clear()
+        self.when.addItem('Any mode', '')
+        for other in self.library.templates:
+            if other.role == 'modifier':
+                self.when.addItem(f'Holding "{other.name}"', other.name)
+        self.when.setCurrentIndex(max(0, self.when.findData(template.when)))
 
     def kind_changed(self):
         kind = self.kind.currentData()
@@ -254,6 +313,8 @@ class GestureDialog(QDialog):
                 template.orientation = getattr(template, 'recorded_orientation', 0.0)
         else:
             template.orientation = None
+        template.when = self.when.currentData() or '' if template.role != 'modifier' else ''
+        template.gates_drawing = self.gates.isChecked() and template.role == 'modifier'
         if self.hand.isChecked():
             if template.chirality is None:
                 template.chirality = getattr(template, 'recorded_chirality', None) or 1
@@ -266,14 +327,14 @@ class GestureDialog(QDialog):
         template = self.current()
         if template is None or row < 0:
             return
-        summary = template.argument or 'unbound'
         self.list.blockSignals(True)
-        self.list.item(row).setText(f'{template.name} — {summary}')
+        self.list.item(row).setText(pose_label(template))
         self.list.blockSignals(False)
 
     def record(self, existing=None):
         name = existing.name if existing else self.unique_name()
-        dialog = RecordDialog(self.source, name, self)
+        role = existing.role if existing else self.hand_role.currentData()
+        dialog = RecordDialog(self.source, name, self, role=role)
         if not dialog.exec() or dialog.template is None:
             return
         template = dialog.template
@@ -282,6 +343,7 @@ class GestureDialog(QDialog):
         template.recorded_chirality = template.chirality
         if existing is not None:
             template.action, template.argument = existing.action, existing.argument
+            template.when, template.gates_drawing = existing.when, existing.gates_drawing
             if existing.orientation is None:
                 template.orientation = None
             if existing.chirality is None:
@@ -341,11 +403,13 @@ class GestureDialog(QDialog):
 class DrawDialog(QDialog):
     """Capture one stroke: pinch the modifier hand, trace, then release."""
 
-    def __init__(self, source, name, parent=None):
+    def __init__(self, source, name, parent=None, library=None):
         super().__init__(parent)
         self.setWindowTitle(f'Drawing "{name}"')
         self.source = source            # callable -> (hands, timestamp)
         self.name = name
+        self.library = library
+        self.gates = library.gates() if library is not None else set()
         self.stroke = None
         self.path = []
         self.aspect = 4/3
@@ -366,6 +430,11 @@ class DrawDialog(QDialog):
         self.timer.timeout.connect(self.sample)
         self.timer.start(25)
 
+    def gate_match(self, modifier):
+        found = self.library.match(modifier.features.pose, modifier.features.orientation,
+                                   modifier.features.chirality, role='modifier')
+        return found is not None and found.name in self.gates
+
     def sample(self):
         from . import roles, strokes
         hands, stamp = self.source()
@@ -380,7 +449,8 @@ class DrawDialog(QDialog):
         if pointer is None or pointer.features is None:
             self.message.setText('Show your pointer hand')
             return
-        gating = modifier.features.left < .32
+        gating = (modifier.features.pose is not None and self.gate_match(modifier)
+                  if self.gates else modifier.features.left < .32)
         if gating:
             self.drawing = True
             self.path.append(tuple(pointer.features.point[:2]))
@@ -403,13 +473,15 @@ class DrawDialog(QDialog):
 class StrokeDialog(QDialog):
     """Manage drawn strokes and their bindings."""
 
-    def __init__(self, library, source, parent=None):
+    def __init__(self, library, source, parent=None, gates=(), pose_library=None):
         super().__init__(parent)
         self.setWindowTitle('Drawn gestures • control remains paused')
         self.resize(620, 420)
         from . import strokes
         self.library = strokes.StrokeLibrary(list(library.strokes))
         self.source = source
+        self.gates = tuple(gates)       # modifier poses available as gates
+        self.pose_library = pose_library
         layout = QVBoxLayout(self)
         columns = QHBoxLayout()
         layout.addLayout(columns, 1)
@@ -446,6 +518,11 @@ class StrokeDialog(QDialog):
             self.app_action.addItem(label, key)
         self.app_action.currentIndexChanged.connect(self.store)
         form.addRow('Command', self.app_action)
+        self.when = QComboBox()
+        self.when.setToolTip('Only match when this modifier pose gated the stroke. Any gate '
+                             'also matches whichever gate was held.')
+        self.when.currentIndexChanged.connect(self.store)
+        form.addRow('Only under', self.when)
         self.rotation = QCheckBox('Match at any orientation')
         self.rotation.setToolTip('Off keeps direction meaningful, so a left swipe and a right '
                                  'swipe stay different gestures. On matches the shape however '
@@ -476,7 +553,7 @@ class StrokeDialog(QDialog):
         self.list.blockSignals(True)
         self.list.clear()
         for stroke in self.library.strokes:
-            self.list.addItem(f'{stroke.name} — {stroke.argument or "unbound"}')
+            self.list.addItem(stroke_label(stroke))
         if select is not None:
             self.list.setCurrentRow(select)
         elif self.library.strokes:
@@ -486,22 +563,37 @@ class StrokeDialog(QDialog):
 
     def select(self, row):
         stroke = self.current()
-        for widget in (self.kind, self.argument, self.app_action, self.rotation,
+        for widget in (self.kind, self.argument, self.app_action, self.rotation, self.when,
                        self.redraw, self.delete):
             widget.setEnabled(stroke is not None)
         if stroke is None:
             self.warning.clear()
             return
-        for widget in (self.kind, self.argument, self.app_action, self.rotation):
+        for widget in (self.kind, self.argument, self.app_action, self.rotation, self.when):
             widget.blockSignals(True)
+        self.when.clear()
+        self.when.addItem('Any gate', '')
+        for gate in self.gates:
+            self.when.addItem(f'Under "{gate}"', gate)
+        self.when.setCurrentIndex(max(0, self.when.findData(stroke.when)))
         self.kind.setCurrentIndex(max(0, self.kind.findData(stroke.action or 'none')))
         self.argument.setText(stroke.argument if stroke.action != 'app' else '')
         if stroke.action == 'app':
             self.app_action.setCurrentIndex(max(0, self.app_action.findData(stroke.argument)))
         self.rotation.setChecked(stroke.free_rotation)
-        for widget in (self.kind, self.argument, self.app_action, self.rotation):
+        for widget in (self.kind, self.argument, self.app_action, self.rotation, self.when):
             widget.blockSignals(False)
+        self.when.setVisible(bool(self.gates))
         self.kind_changed()
+
+    def reload_modes(self, template):
+        """Fill the scoping list with the modifier poses available as modes."""
+        self.when.clear()
+        self.when.addItem('Any mode', '')
+        for other in self.library.templates:
+            if other.role == 'modifier':
+                self.when.addItem(f'Holding "{other.name}"', other.name)
+        self.when.setCurrentIndex(max(0, self.when.findData(template.when)))
 
     def kind_changed(self):
         kind = self.kind.currentData()
@@ -519,21 +611,22 @@ class StrokeDialog(QDialog):
         stroke.argument = (self.app_action.currentData() if kind == 'app'
                            else self.argument.text() if kind in ('key', 'shell') else '')
         stroke.free_rotation = self.rotation.isChecked()
+        stroke.when = self.when.currentData() or ''
         row = self.list.currentRow()
         if row >= 0:
             self.list.blockSignals(True)
-            self.list.item(row).setText(f'{stroke.name} — {stroke.argument or "unbound"}')
+            self.list.item(row).setText(stroke_label(stroke))
             self.list.blockSignals(False)
 
     def draw(self, existing=None):
         name = existing.name if existing else self.unique_name()
-        dialog = DrawDialog(self.source, name, self)
+        dialog = DrawDialog(self.source, name, self, library=self.pose_library)
         if not dialog.exec() or dialog.stroke is None:
             return
         stroke = dialog.stroke
         if existing is not None:
             stroke.action, stroke.argument = existing.action, existing.argument
-            stroke.free_rotation = existing.free_rotation
+            stroke.free_rotation, stroke.when = existing.free_rotation, existing.when
         clash = self.library.conflict(stroke)
         self.library.replace(stroke)
         self.refresh(select=[s.name for s in self.library.strokes].index(stroke.name))

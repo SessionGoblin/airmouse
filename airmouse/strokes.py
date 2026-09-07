@@ -182,6 +182,9 @@ class Stroke:
     # True matches the shape at any orientation, which also merges strokes that
     # differ only in direction. False keeps left, right and up distinct.
     free_rotation: bool = False
+    # Only match while this modifier pose gated the stroke. Empty matches
+    # whichever gate was held, so a single-gate setup needs no scoping.
+    when: str = ''
 
     def compare(self, points):
         if not self.points or points is None:
@@ -197,12 +200,22 @@ class Stroke:
 class StrokeLibrary:
     strokes: list = field(default_factory=list)
 
-    def match(self, points, threshold=THRESHOLD):
-        best, rating = None, threshold
+    def match(self, points, threshold=THRESHOLD, mode=None):
+        """Best stroke drawn under the given gate, or None.
+
+        A stroke scoped to the held gate outranks an unscoped one, so the same
+        shape can mean different things under different modifier poses.
+        """
+        best, rank = None, None
         for stroke in self.strokes:
+            if stroke.when and stroke.when != mode:
+                continue
             value = stroke.compare(points)
-            if value >= rating:
-                best, rating = stroke, value
+            if value < threshold:
+                continue
+            candidate = (0 if stroke.when else 1, -value)
+            if rank is None or candidate < rank:
+                best, rank = stroke, candidate
         return best
 
     def nearest(self, points):
@@ -217,6 +230,8 @@ class StrokeLibrary:
         for stroke in self.strokes:
             if stroke.name == candidate.name or not stroke.points:
                 continue
+            if stroke.when != candidate.when:
+                continue        # different gates; the same shape can mean two things
             if stroke.compare(list(candidate.points)) >= THRESHOLD:
                 return stroke
         return None

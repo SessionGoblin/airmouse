@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from airmouse import poses, recorder
 from airmouse.config import Settings
 from airmouse.gestures import Features
+from airmouse.roles import Hand, POINTER, MODIFIER
 
 app = QApplication.instance() or QApplication([])
 
@@ -24,18 +25,24 @@ def hand(seed=1, jitter=0.0):
 
 
 def features_for(points, left=.8, right=.8, scroll=False):
-    pose, orientation, _ = poses.normalize(points, 1.0)
-    return Features((.5, .5), left, right, scroll, pose, orientation)
+    pose, orientation, chirality = poses.normalize(points, 1.0)
+    return Features((.5, .5), left, right, scroll, pose, orientation, chirality)
+
+
+def as_hands(features, role=POINTER):
+    return [] if features is None else [Hand(points=[(0., 0., 0.)]*21, role=role,
+                                             features=features)]
 
 
 class Feed:
-    """Stands in for the window's per-frame feature publication."""
-    def __init__(self, features):
+    """Stands in for the window's per-frame publication of tracked hands."""
+    def __init__(self, features, role=POINTER):
         self.features = features
+        self.role = role
         self.stamp = time.monotonic()
 
     def __call__(self):
-        return self.features, self.stamp
+        return as_hands(self.features, self.role), self.stamp
 
 
 def drive(dialog, seconds, step=.02):
@@ -75,7 +82,7 @@ def test_a_hand_that_disappears_restarts_rather_than_averaging_the_gap():
     feed.features = None
     dialog.sample()
     assert dialog.samples == []
-    assert 'No hand' in dialog.message.text()
+    assert 'No pointer hand' in dialog.message.text()
 
 
 def test_stale_features_count_as_no_hand():
@@ -101,7 +108,7 @@ def test_an_unsteady_pose_is_refused_rather_than_saved():
         def __call__(self):
             self.n += 1
             self.stamp = time.monotonic()
-            return features_for(hand(seed=self.n)), self.stamp
+            return as_hands(features_for(hand(seed=self.n))), self.stamp
 
     dialog = recorder.RecordDialog(Shaky(), 'jitter')
     dialog.timer.stop()
@@ -140,7 +147,7 @@ def test_shadow_check_respects_disabled_built_ins():
 def gesture_dialog(templates, tmp_path, monkeypatch):
     monkeypatch.setattr('airmouse.poses.GESTURE_PATH', tmp_path/'gestures.json')
     return recorder.GestureDialog(poses.Library(list(templates)), Settings(),
-                                  lambda: (None, None))
+                                  lambda: ([], None))
 
 
 def make_template(name, seed=1, **kw):
@@ -210,7 +217,7 @@ def test_dialog_edits_a_copy_until_saved(tmp_path, monkeypatch):
     against on the vision thread."""
     original = poses.Library([make_template('a', action='shell', argument='true')])
     monkeypatch.setattr('airmouse.poses.GESTURE_PATH', tmp_path/'gestures.json')
-    d = recorder.GestureDialog(original, Settings(), lambda: (None, None))
+    d = recorder.GestureDialog(original, Settings(), lambda: ([], None))
     d.library.remove('a')
     assert [t.name for t in original.templates] == ['a']
 
@@ -222,7 +229,7 @@ def test_record_buttons_survive_the_clicked_signal(tmp_path, monkeypatch):
     seen = []
 
     class StubRecord:
-        def __init__(self, source, name, parent=None):
+        def __init__(self, source, name, parent=None, role='pointer'):
             self.template = None
 
         def exec(self):
@@ -243,8 +250,8 @@ def test_record_button_creates_a_uniquely_named_template(tmp_path, monkeypatch):
     built = make_template('Gesture 1', seed=4)
 
     class StubRecord:
-        def __init__(self, source, name, parent=None):
-            self.template = poses.Template(name=name, pose=built.pose, threshold=.2)
+        def __init__(self, source, name, parent=None, role='pointer'):
+            self.template = poses.Template(name=name, pose=built.pose, threshold=.2, role=role)
 
         def exec(self):
             return 1
