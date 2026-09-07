@@ -133,9 +133,12 @@ class GestureDialog(QDialog):
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self.select)
         left.addWidget(self.list, 1)
-        record = QPushButton('Record new pose…')
-        record.clicked.connect(self.record)
-        left.addWidget(record)
+        # Wrap both in lambdas: clicked emits `checked`, and PySide hands it to
+        # any slot whose signature can accept an argument, so connecting
+        # record() directly passed a bool as `existing`.
+        self.record_button = QPushButton('Record new pose…')
+        self.record_button.clicked.connect(lambda: self.record(None))
+        left.addWidget(self.record_button)
         self.rerecord = QPushButton('Re-record selected')
         self.rerecord.clicked.connect(lambda: self.record(self.current()))
         left.addWidget(self.rerecord)

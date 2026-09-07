@@ -213,3 +213,48 @@ def test_dialog_edits_a_copy_until_saved(tmp_path, monkeypatch):
     d = recorder.GestureDialog(original, Settings(), lambda: (None, None))
     d.library.remove('a')
     assert [t.name for t in original.templates] == ['a']
+
+
+def test_record_buttons_survive_the_clicked_signal(tmp_path, monkeypatch):
+    """clicked emits `checked`, and PySide passes it to any slot that can take
+    an argument -- so record(existing=None) received a bool. Only pressing the
+    real button catches this; calling record() directly does not."""
+    seen = []
+
+    class StubRecord:
+        def __init__(self, source, name, parent=None):
+            self.template = None
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
+    d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
+    monkeypatch.setattr(d, 'record', lambda existing=None: seen.append(existing))
+    # Reconnect through the same lambdas the dialog builds.
+    d.record_button.click()
+    d.list.setCurrentRow(0)
+    d.rerecord.click()
+    assert seen[0] is None                      # new pose, not False
+    assert seen[1] is d.library.templates[0]    # re-record targets the selection
+
+
+def test_record_button_creates_a_uniquely_named_template(tmp_path, monkeypatch):
+    built = make_template('Gesture 1', seed=4)
+
+    class StubRecord:
+        def __init__(self, source, name, parent=None):
+            self.template = poses.Template(name=name, pose=built.pose, threshold=.2)
+
+        def exec(self):
+            return 1
+
+        def shadows(self, settings):
+            return []
+
+    monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
+    d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
+    d.record_button.click()
+    assert [t.name for t in d.library.templates] == ['a', 'Gesture 1']
+    d.record_button.click()
+    assert [t.name for t in d.library.templates] == ['a', 'Gesture 1', 'Gesture 2']
