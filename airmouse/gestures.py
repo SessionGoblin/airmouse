@@ -19,6 +19,7 @@ class State(str, Enum):
     SCROLLING = 'scrolling'
     CUSTOM = 'custom-pose'
     DRAWING = 'drawing'
+    THROWN = 'throwing'
     PAUSED = 'paused'
 
 @dataclass

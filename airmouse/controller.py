@@ -1,8 +1,31 @@
 import threading
 import math
+from collections import deque
+from dataclasses import dataclass
 from .gestures import GestureMachine, State
 from .mapping import CursorMapper
 from . import poses as poses_module, strokes as strokes_module
+
+# Fling. Releasing a pinch mid-motion keeps the button held and coasts the
+# pointer: a compositor stops moving a window the moment the button comes up,
+# so animating a throw means holding through the coast and releasing at the end.
+TRAIL = .20           # seconds of drag positions kept for the velocity estimate
+SETTLE = .06          # ignored before release; opening a pinch drags the fingertip
+MIN_SPAN = .04        # minimum time between the two samples used
+FLING_MIN = 600       # px/s below which a release is just a release
+FLING_STOP = 80       # px/s at which the coast ends
+FLING_TAU = .30       # seconds; velocity decays as exp(-dt/tau)
+FLING_LIMIT = 1.2     # coast distance cap, as a fraction of the widest screen span
+FLING_DEADLINE = .8   # hard stop, so the button can never be held indefinitely
+
+
+@dataclass
+class Throw:
+    point: tuple
+    velocity: tuple
+    limit: float
+    deadline: float
+    travel: float = 0.0
 
 class Controller:
     """Serialized control gate, including emergency release from keyboard thread."""
@@ -28,6 +51,8 @@ class Controller:
         # already released and self.mode has cleared.
         self.stroke_mode = None
         self.gate_open = False
+        self.throw = None
+        self.trail = deque()
         self.lock = threading.RLock()
         self.enabled = False
         self.last = None
@@ -57,6 +82,10 @@ class Controller:
                 self.mode_latch.reset()
                 self.stroke_mode = None
                 self.gate_open = False
+                # backend.up() above already released; drop the coast so an
+                # emergency stop cannot leave the button held.
+                self.throw = None
+                self.trail.clear()
 
     def resume(self):
         with self.lock:
@@ -79,6 +108,9 @@ class Controller:
             else:
                 self.raw_point = None
             if features is None or (self.last is not None and now-self.last > .3):
+                # A hand lost mid-coast ends it here rather than coasting on
+                # blind: this is a tracking failure, not an intent.
+                self.end_throw()
                 if self.backend and self.machine.down: self.backend.up()
                 self.machine.reset(paused=not self.enabled)
                 self.mapper.filter.reset()
@@ -103,10 +135,18 @@ class Controller:
             if gating:
                 # Freeze the cursor while drawing, and drop a drag rather than
                 # smearing the window along the stroke.
+                self.end_throw()
                 for action in self.machine.release():
                     if self.backend: self.backend.up()
                 self.machine.state = State.DRAWING
                 return State.DRAWING.value
+            if self.throw is not None:
+                # Re-pinching catches the throw in flight; otherwise the coast
+                # owns the pointer and the machine is not stepped at all.
+                if features and self.settings.left and features.left < self.settings.pinch:
+                    self.end_throw()
+                elif self.advance_throw(dt):
+                    return State.THROWN.value
             if self.mapper.filter.value is None and features:
                 # Slew from current desktop position on X11; virtual absolute pointer
                 # starts at centre and approaches the hand slowly on acquisition.
@@ -156,15 +196,24 @@ class Controller:
                     self.target = self.mapper.visible_point(desired)
                     self.mapper.filter.value = desired
                     self.backend.move(*(round(v) for v in self.target))
+                    if self.machine.down:
+                        # Emitted positions, not the raw fingertip: the throw
+                        # should carry the speed the window actually had.
+                        self.trail.append((now, self.target))
+                        while self.trail and now-self.trail[0][0] > TRAIL:
+                            self.trail.popleft()
                 elif action[0] == 'down':
                     self.drag_origin = self.mapper.target(features.point, self.settings)
                     self.drag_cursor = self.target or self.mapper.filter.value
                     self.drag_started = False
+                    self.trail.clear()
                     self.backend.down()
                 elif action[0] == 'up':
+                    thrown = self.start_throw(now)
                     self.drag_origin = None
                     self.drag_started = False
-                    self.backend.up()
+                    if not thrown:
+                        self.backend.up()
                 elif action[0] == 'scroll': self.backend.scroll(action[1])
                 else: getattr(self.backend, action[0])()
             return self.machine.state.value
@@ -205,6 +254,75 @@ class Controller:
             limit = self.settings.release if self.gate_open else self.settings.pinch
             self.gate_open = modifier.left < limit
         return self.gate_open
+
+    def fling_velocity(self, now):
+        """Pointer velocity just before a release, in px/s, or None.
+
+        The last SETTLE seconds are excluded. Opening a pinch pulls the index
+        fingertip sideways for a frame or two, and including that curves every
+        throw toward wherever the thumb went.
+        """
+        usable = [(t, p) for t, p in self.trail if SETTLE <= now-t <= TRAIL]
+        if len(usable) < 2:
+            return None
+        (first, start), (last, end) = usable[0], usable[-1]
+        span = last - first
+        if span < MIN_SPAN:
+            return None
+        return ((end[0]-start[0])/span, (end[1]-start[1])/span)
+
+    def start_throw(self, now):
+        """Begin a coast instead of releasing, if the drag earned one."""
+        if not self.settings.fling or not self.drag_started:
+            return False        # a click, or a drag that never moved, is not a throw
+        velocity = self.fling_velocity(now)
+        if velocity is None or math.hypot(*velocity) < FLING_MIN:
+            return False
+        origin = self.target or self.mapper.filter.value
+        if origin is None or self.backend is None:
+            return False
+        self.throw = Throw(point=tuple(origin), velocity=velocity,
+                           limit=max(self.mapper.bounds[2:])*FLING_LIMIT,
+                           deadline=now+FLING_DEADLINE)
+        self.trail.clear()
+        self.machine.state = State.THROWN
+        return True
+
+    def advance_throw(self, dt):
+        """Move one coast step. False once the throw is over."""
+        throw = self.throw
+        if throw is None:
+            return False
+        if (math.hypot(*throw.velocity) < FLING_STOP or throw.travel > throw.limit
+                or self.last > throw.deadline):
+            self.end_throw()
+            return False
+        step = (throw.velocity[0]*dt, throw.velocity[1]*dt)
+        point = (throw.point[0]+step[0], throw.point[1]+step[1])
+        x, y, w, h = self.mapper.bounds
+        clamped = (min(x+w-1, max(x, point[0])), min(y+h-1, max(y, point[1])))
+        throw.point = clamped
+        throw.travel += math.hypot(*step)
+        throw.velocity = tuple(v*math.exp(-dt/FLING_TAU) for v in throw.velocity)
+        self.target = self.mapper.visible_point(clamped)
+        # Keep the filter on the coast path, so the pointer reacquires from
+        # where it landed rather than snapping back to the pre-throw position.
+        self.mapper.filter.value = clamped
+        if self.backend:
+            self.backend.move(*(round(v) for v in self.target))
+        if clamped != point:
+            self.end_throw()        # stop at the desktop edge, not along it
+            return False
+        return True
+
+    def end_throw(self):
+        """Release the button the coast has been holding down."""
+        if self.throw is None:
+            return
+        self.throw = None
+        self.drag_cursor = None
+        if self.backend:
+            self.backend.up()
 
     def recognize(self, path, mode=None):
         """Score a finished stroke and run whatever it is bound to."""

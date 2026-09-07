@@ -43,6 +43,7 @@ Holding a right pinch freezes the cursor until release. Scrolling now requires s
 | Right click | Thumb-middle pinch; open before another right click |
 | Scroll | Index and middle extended, ring and little fingers folded; hold 350 ms, then move vertically |
 | Custom pose | Any recorded hand shape, held 450 ms; see below |
+| Fling | Release a drag while still moving; the window coasts and settles |
 | Pause / resume | Global **F8** |
 | Emergency stop | Global **F12**; always pauses and releases the left button |
 | Local stop | **Escape** when the app is focused, or the red stop button |

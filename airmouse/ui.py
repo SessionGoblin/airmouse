@@ -133,7 +133,8 @@ class Window(QMainWindow):
         self.pointer_side.currentIndexChanged.connect(
             lambda: self.setting('pointer_side', self.pointer_side.currentData()))
         form.addRow('Pointer', self.pointer_side)
-        for key, label in [('left','Pinch click & drag'),('right','Middle pinch right click'),('scroll','Two-finger scroll')]:
+        for key, label in [('left','Pinch click & drag'),('right','Middle pinch right click'),
+                           ('scroll','Two-finger scroll'),('fling','Fling on a fast release')]:
             box = QCheckBox(label)
             box.setChecked(getattr(self.settings,key))
             box.toggled.connect(lambda value, k=key: self.setting(k,value))
