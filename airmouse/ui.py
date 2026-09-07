@@ -463,12 +463,30 @@ class Window(QMainWindow):
                 from .gestures import joint_angle
                 text += f'Index PIP angle {joint_angle(points, 5, 6, 8):.1f}°; middle PIP angle {joint_angle(points, 9, 10, 12):.1f}°\n'
                 text += self.pose_diagnostics(features)
+                text += self.modifier_diagnostics(roles.by_role(hands, roles.MODIFIER))
                 name, rating = self.controller.last_stroke
                 if name:
                     verdict = 'matched' if rating >= strokes.THRESHOLD else 'below threshold'
                     text += f'Last stroke: nearest "{name}" {rating:.3f} -> {verdict}\n'
                 text += ' '.join(f'{i}:({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})' for i,p in enumerate(points))+'\n'
             self.diagnostics.setPlainText(text+'\n'.join(self.transitions))
+
+    def modifier_diagnostics(self, modifier):
+        """Why the modifier hand is or is not holding a mode, and whether it is
+        gating drawing -- which freezes the cursor, and is otherwise invisible."""
+        gates = self.library.gates()
+        source = 'gate pose' if gates else 'pinch'
+        if modifier is None or modifier.features is None:
+            return f'Modifier: not visible • drawing gated by {source}\n'
+        template, gap = self.library.nearest(modifier.features.pose, role='modifier')
+        if template is None:
+            near = 'no modifier poses recorded'
+        else:
+            verdict = 'MATCH' if gap <= template.threshold else 'too far'
+            near = f'nearest "{template.name}" {gap:.3f} / {template.threshold:.3f} -> {verdict}'
+        return (f'Modifier: {near} • pinch {modifier.features.left:.2f}\n'
+                f'Gate: {source}, {"OPEN (cursor frozen)" if self.controller.gate_open else "closed"}'
+                f' • gates: {", ".join(sorted(gates)) or "none"}\n')
 
     def pose_diagnostics(self, features):
         """Why a custom pose did or did not fire, in the units it is judged in.

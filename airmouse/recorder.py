@@ -5,6 +5,7 @@ camera or the worker, so recording never competes with the vision loop for
 frames and control stays paused throughout.
 """
 import time
+from dataclasses import replace
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -152,7 +153,11 @@ class GestureDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Custom gestures • control remains paused')
         self.resize(620, 420)
-        self.library = poses.Library(list(library.templates))
+        # Copy each template, not just the list: sharing the objects meant an
+        # edit here mutated what the controller was matching against straight
+        # away, and cancelling could not undo it. Poses are immutable tuples,
+        # so a shallow dataclass copy is enough.
+        self.library = poses.Library([replace(t) for t in library.templates])
         self.settings = settings
         self.source = source
         self.capture = None
@@ -168,13 +173,6 @@ class GestureDialog(QDialog):
         # Wrap both in lambdas: clicked emits `checked`, and PySide hands it to
         # any slot whose signature can accept an argument, so connecting
         # record() directly passed a bool as `existing`.
-        self.hand_role = QComboBox()
-        for key, label in [('pointer', 'Pointer hand'), ('modifier', 'Modifier hand')]:
-            self.hand_role.addItem(label, key)
-        self.hand_role.setToolTip('Which hand a new recording reads from. A modifier pose is '
-                                  'also a mode: pointer poses and drawn strokes can be scoped '
-                                  'to it.')
-        left.addWidget(self.hand_role)
         self.record_button = QPushButton('Record new pose…')
         self.record_button.clicked.connect(lambda: self.record(None))
         left.addWidget(self.record_button)
@@ -188,6 +186,14 @@ class GestureDialog(QDialog):
         panel = QGroupBox('When this pose is held')
         form = QFormLayout(panel)
         columns.addWidget(panel, 1)
+        self.role = QComboBox()
+        for key, label in [('pointer', 'Pointer hand'), ('modifier', 'Modifier hand')]:
+            self.role.addItem(label, key)
+        self.role.setToolTip('Which hand this gesture is read from, and which hand a new '
+                             'recording samples. A modifier pose is also a mode: pointer '
+                             'poses and drawn strokes can be scoped to it.')
+        self.role.currentIndexChanged.connect(self.role_changed)
+        form.addRow('Hand', self.role)
         self.kind = QComboBox()
         for key, label in [('none', 'Nothing'), ('key', 'Press a shortcut'),
                            ('app', 'Control AirMouse'), ('shell', 'Run a command')]:
@@ -262,12 +268,16 @@ class GestureDialog(QDialog):
         for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
                        self.when, self.gates, self.rerecord, self.delete):
             widget.setEnabled(template is not None)
+        # The hand stays live with nothing selected: it is then the hand the
+        # next recording will read from.
+        self.role.setEnabled(True)
         if template is None:
             self.warning.clear()
             return
         for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
-                       self.when, self.gates):
+                       self.when, self.gates, self.role):
             widget.blockSignals(True)
+        self.role.setCurrentIndex(max(0, self.role.findData(template.role or 'pointer')))
         self.reload_modes(template)
         self.kind.setCurrentIndex(max(0, self.kind.findData(template.action or 'none')))
         self.argument.setText(template.argument if template.action != 'app' else '')
@@ -277,11 +287,9 @@ class GestureDialog(QDialog):
         self.hand.setChecked(template.chirality is not None)
         self.gates.setChecked(template.gates_drawing)
         for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
-                       self.when, self.gates):
+                       self.when, self.gates, self.role):
             widget.blockSignals(False)
-        modifier = template.role == 'modifier'
-        self.gates.setVisible(modifier)
-        self.when.setVisible(not modifier)
+        self.sync_role()
         self.kind_changed()
 
     def reload_modes(self, template):
@@ -292,6 +300,24 @@ class GestureDialog(QDialog):
             if other.role == 'modifier':
                 self.when.addItem(f'Holding "{other.name}"', other.name)
         self.when.setCurrentIndex(max(0, self.when.findData(template.when)))
+
+    def sync_role(self):
+        """Show only the fields that apply to the selected hand."""
+        modifier = self.role.currentData() == 'modifier'
+        self.gates.setVisible(modifier)
+        self.when.setVisible(not modifier)
+
+    def role_changed(self):
+        """Reassign the selected gesture to the other hand.
+
+        Poses are stored mirrored into one chirality, so a recording made with
+        one hand matches the other; switching hands needs no re-recording.
+        """
+        template = self.current()
+        if template is not None:
+            template.role = self.role.currentData()
+        self.sync_role()
+        self.store()
 
     def kind_changed(self):
         kind = self.kind.currentData()
@@ -305,6 +331,7 @@ class GestureDialog(QDialog):
         template = self.current()
         if template is None:
             return
+        template.role = self.role.currentData()
         kind = self.kind.currentData()
         template.action = kind
         template.argument = (self.app_action.currentData() if kind == 'app'
@@ -337,7 +364,7 @@ class GestureDialog(QDialog):
             self.capture.raise_()
             return
         name = existing.name if existing else self.unique_name()
-        role = existing.role if existing else self.hand_role.currentData()
+        role = existing.role if existing else self.role.currentData()
         dialog = RecordDialog(self.source, name, self, role=role)
         # Non-modal, like this dialog itself: recording asks you to hold a pose
         # where the camera can see it, which needs the preview underneath.
@@ -507,7 +534,7 @@ class StrokeDialog(QDialog):
         self.setWindowTitle('Drawn gestures • control remains paused')
         self.resize(620, 420)
         from . import strokes
-        self.library = strokes.StrokeLibrary(list(library.strokes))
+        self.library = strokes.StrokeLibrary([replace(x) for x in library.strokes])
         self.source = source
         self.gates = tuple(gates)       # modifier poses available as gates
         self.pose_library = pose_library
@@ -534,6 +561,14 @@ class StrokeDialog(QDialog):
         panel = QGroupBox('When this stroke is drawn')
         form = QFormLayout(panel)
         columns.addWidget(panel, 1)
+        self.role = QComboBox()
+        for key, label in [('pointer', 'Pointer hand'), ('modifier', 'Modifier hand')]:
+            self.role.addItem(label, key)
+        self.role.setToolTip('Which hand this gesture is read from, and which hand a new '
+                             'recording samples. A modifier pose is also a mode: pointer '
+                             'poses and drawn strokes can be scoped to it.')
+        self.role.currentIndexChanged.connect(self.role_changed)
+        form.addRow('Hand', self.role)
         self.kind = QComboBox()
         for key, label in [('none', 'Nothing'), ('key', 'Press a shortcut'),
                            ('app', 'Control AirMouse'), ('shell', 'Run a command')]:
@@ -625,6 +660,24 @@ class StrokeDialog(QDialog):
             if other.role == 'modifier':
                 self.when.addItem(f'Holding "{other.name}"', other.name)
         self.when.setCurrentIndex(max(0, self.when.findData(template.when)))
+
+    def sync_role(self):
+        """Show only the fields that apply to the selected hand."""
+        modifier = self.role.currentData() == 'modifier'
+        self.gates.setVisible(modifier)
+        self.when.setVisible(not modifier)
+
+    def role_changed(self):
+        """Reassign the selected gesture to the other hand.
+
+        Poses are stored mirrored into one chirality, so a recording made with
+        one hand matches the other; switching hands needs no re-recording.
+        """
+        template = self.current()
+        if template is not None:
+            template.role = self.role.currentData()
+        self.sync_role()
+        self.store()
 
     def kind_changed(self):
         kind = self.kind.currentData()

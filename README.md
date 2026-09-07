@@ -62,13 +62,13 @@ The modifier hand gates drawn gestures and carries its own poses (below). Costs 
 
 ### Modifier poses and modes
 
-A recorded pose can be read from either hand. Choose **Modifier hand** in the gesture list before recording, and the pose is matched against your off hand instead of the pointer.
+A recorded pose can be read from either hand. **Hand** in the gesture's own settings chooses which — it sets the hand a new recording samples from, and can be changed on an existing gesture at any time. No re-recording is needed: poses are stored mirrored into a single chirality, so the recording is already valid for either hand and only the hand it is read from changes.
 
 A held modifier pose is also a **mode**, and that is what makes it a modifier rather than a second pose slot. Pointer poses and drawn strokes can be scoped with **Only while** / **Only under**, so three modifier poses multiply the gestures you already have instead of adding three more to remember. Unscoped gestures keep working in every mode — holding a modifier never switches off your ordinary gestures — and a scoped gesture outranks an unscoped one of the same shape, since the more specific binding is the one you raised the modifier for.
 
 The gate uses the same pinch/release hysteresis as clicking, so pinch noise cannot chop one stroke into several too-short ones.
 
-Mark a modifier pose **Holding this opens stroke drawing** to replace the built-in modifier pinch. Strokes can then be scoped per gate, so the same shape drawn under two different modifier poses means two different things. A gate pose does not also run its own binding; it is a mode, not an event.
+Mark a modifier pose **Holding this opens stroke drawing** to replace the built-in modifier pinch. Once any gate pose exists the pinch no longer opens drawing, and holding a gate freezes the cursor — `--debug` reports which gate is in use and whether it is currently open, so a gate engaging unexpectedly is visible rather than looking like the pointer has locked up. Strokes can then be scoped per gate, so the same shape drawn under two different modifier poses means two different things. A gate pose does not also run its own binding; it is a mode, not an event.
 
 A chord costs two confirmations in sequence — the modifier must settle before the scoped pose becomes eligible — so it takes about twice **Custom pose confirmation** to fire. That is the price of not triggering chords on a modifier shape passing through on its way somewhere else; lower `custom_dwell` in calibration if it feels slow. The current mode is shown in the status line and in `--debug`.
 

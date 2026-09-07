@@ -251,3 +251,67 @@ def test_pose_latch_restarts_the_dwell_on_a_different_pose():
     assert latch.update(b, .15, .2) is None          # swapped; dwell restarts
     assert latch.update(b, .3, .2) is None           # not yet .2 since the swap
     assert latch.update(b, .4, .2) is b
+
+
+# --- dialog isolation ----------------------------------------------------------
+
+def test_editing_a_gesture_does_not_reach_the_live_library_until_saved(tmp_path, monkeypatch):
+    """The dialog shared Template objects with the library the controller was
+    matching against, so an edit took effect immediately and cancelling could
+    not undo it. Flipping a pose to a drawing gate that way froze the cursor."""
+    import os
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    from PySide6.QtWidgets import QApplication
+    from airmouse import recorder
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr('airmouse.poses.GESTURE_PATH', tmp_path/'gestures.json')
+
+    live = poses.Library([template('wave', 2, action='shell', argument='xterm')])
+    d = recorder.GestureDialog(live, S, lambda: ([], None))
+    assert d.library.templates[0] is not live.templates[0]
+
+    d.list.setCurrentRow(0)
+    d.role.setCurrentIndex(d.role.findData('modifier'))
+    d.gates.setChecked(True)
+    d.kind.setCurrentIndex(d.kind.findData('none'))
+    assert live.templates[0].role == 'pointer'          # untouched
+    assert live.templates[0].action == 'shell'
+    assert live.gates() == set()                        # cursor cannot be frozen by this
+    d.reject()
+    assert live.templates[0].action == 'shell'
+
+
+def test_the_hand_can_be_reassigned_without_re_recording(tmp_path, monkeypatch):
+    """Poses are stored mirrored into one chirality, so the recording is valid
+    for either hand; only which hand it is read from changes."""
+    import os
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+    from PySide6.QtWidgets import QApplication
+    from airmouse import recorder
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr('airmouse.poses.GESTURE_PATH', tmp_path/'gestures.json')
+
+    d = recorder.GestureDialog(poses.Library([template('wave', 2)]), S, lambda: ([], None))
+    d.list.setCurrentRow(0)
+    before = d.current().pose
+    d.role.setCurrentIndex(d.role.findData('modifier'))
+    assert d.current().role == 'modifier'
+    assert d.current().pose == before                   # no re-recording needed
+    d.apply()
+    assert poses.Library.load(tmp_path/'gestures.json').templates[0].role == 'modifier'
+
+
+def test_a_deleted_gate_stops_gating_once_applied():
+    """The reported symptom: the modifier kept blocking after its gate pose was
+    removed. A gate suppresses the pinch fallback, so a stale one freezes the
+    cursor whenever the second hand is up."""
+    gate = template('gate', 1, role='modifier', gates_drawing=True)
+    c = controller([gate])
+    assert c.machine.library.gates() == {'gate'}
+    hold(c, features(5), features(1))
+    assert c.drawing_gate(features(1)) is True
+    # What the window does when the dialog saves.
+    c.machine.library = poses.Library([])
+    c.mode = None
+    assert c.drawing_gate(features(1)) is False          # falls back to the pinch
+    assert c.drawing_gate(features(1, left=.1)) is True
