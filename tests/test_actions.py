@@ -56,14 +56,80 @@ def test_app_and_shell_bindings_are_validated():
         actions.validate('teleport', 'x')
 
 
+def primed(factory):
+    """A dispatcher whose keyboard has finished building."""
+    d = actions.Dispatcher(keyboard_factory=factory)
+    d.prime()
+    d._priming.join(2)
+    return d
+
+
 def test_key_binding_taps_and_reuses_one_device():
     keyboard = FakeKeyboard()
     made = []
-    d = actions.Dispatcher(keyboard_factory=lambda: made.append(1) or keyboard)
+    d = primed(lambda: made.append(1) or keyboard)
     assert d.run(poses.Template(name='a', action='key', argument='ctrl+alt+t'))
     assert d.run(poses.Template(name='b', action='key', argument='super'))
     assert keyboard.taps == [('ctrl', 'alt', 't'), ('super',)]
-    assert made == [1]                      # created once, on first use
+    assert made == [1]                      # built once, not per press
+
+
+def test_a_key_press_never_waits_for_the_device_to_be_built():
+    """Building it takes up to two seconds while evdev waits on udev. Inline,
+    on the vision thread, that stalls tracking past the watchdog and control is
+    disabled -- which happened on the first key gesture and never again."""
+    import threading, time
+    release = threading.Event()
+    keyboard = FakeKeyboard()
+
+    def slow():
+        release.wait(5)
+        return keyboard
+
+    d = actions.Dispatcher(keyboard_factory=slow)
+    d.prime()
+    start = time.monotonic()
+    fired = d.run(poses.Template(name='a', action='key', argument='ctrl+w'))
+    assert time.monotonic() - start < .2       # returned immediately
+    assert fired is False                      # this press is dropped, not blocked
+    assert 'still starting up' in d.error
+    release.set()
+    d._priming.join(2)
+    assert d.ready()
+    assert d.run(poses.Template(name='a', action='key', argument='ctrl+w'))
+    assert keyboard.taps == [('ctrl', 'w')]
+
+
+def test_an_unprimed_key_press_starts_the_build_itself():
+    """Priming is a head start, not a requirement: a binding added mid-session
+    still works, it just loses the first press."""
+    keyboard = FakeKeyboard()
+    d = actions.Dispatcher(keyboard_factory=lambda: keyboard)
+    assert d.run(poses.Template(name='a', action='key', argument='ctrl+w')) is False
+    d._priming.join(2)
+    assert d.run(poses.Template(name='a', action='key', argument='ctrl+w'))
+
+
+def test_priming_twice_builds_one_device():
+    made = []
+    d = actions.Dispatcher(keyboard_factory=lambda: made.append(1) or FakeKeyboard())
+    d.prime()
+    d.prime()
+    if d._priming:
+        d._priming.join(2)
+    d.prime()
+    assert made == [1]
+
+
+def test_a_keyboard_that_cannot_be_built_reports_instead_of_raising():
+    def broken():
+        raise OSError('no /dev/uinput')
+    d = actions.Dispatcher(keyboard_factory=broken)
+    d.prime()
+    d._priming.join(2)
+    assert not d.ready()
+    assert 'keyboard unavailable' in d.error
+    assert d.run(poses.Template(name='a', action='key', argument='ctrl+w')) is False
 
 
 def test_no_keyboard_device_until_a_key_binding_fires():

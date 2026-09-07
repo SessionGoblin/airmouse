@@ -229,12 +229,24 @@ class Window(QMainWindow):
             self.keys = Hotkeys(self.receive_hotkey, self.receive_hotkey_failure)
             self.controller.backend = create_backend(self.controller.mapper.bounds)
             self.input_error = ''
+            self.prime_keyboard()
             self.platform_status.setText(('Wayland uinput' if wayland() else 'Native / X11') + ' input ready • global F8 / F12 active')
         except Exception as exc:
             if self.keys: self.keys.close()
             self.keys = None
             self.input_error = str(exc)
             self.platform_status.setText('Preview only: ' + self.input_error)
+
+    def prime_keyboard(self):
+        """Build the virtual keyboard ahead of the gesture that needs it.
+
+        Only when something is actually bound to a key, so a setup that never
+        presses one still never asks for the extra uinput node.
+        """
+        bound = [t for t in self.library.templates if t.action == 'key']
+        bound += [x for x in self.stroke_library.strokes if x.action == 'key']
+        if bound:
+            self.dispatcher.prime()
 
     def receive_hotkey_failure(self, error):
         self.controller.pause()
@@ -347,6 +359,7 @@ class Window(QMainWindow):
             # The machine holds the library directly, and reset() re-runs
             # __init__ with it, so swapping the reference is enough.
             self.controller.machine.library = self.library
+            self.prime_keyboard()
         self.open_dialog(GestureDialog(self.library, self.settings,
                                        lambda: self.last_hands, self), applied)
 
@@ -356,6 +369,7 @@ class Window(QMainWindow):
         def applied(dialog):
             self.stroke_library = dialog.library
             self.controller.stroke_library = self.stroke_library
+            self.prime_keyboard()
         self.open_dialog(StrokeDialog(self.stroke_library, lambda: self.last_hands, self,
                                       gates=sorted(self.library.gates()),
                                       pose_library=self.library,
@@ -426,7 +440,9 @@ class Window(QMainWindow):
             self.stop()
             self.platform_status.setText(error)
             return
-        if age > .3 and self.controller.enabled: self.pause()
+        if age > .3 and self.controller.enabled:
+            self.pause()
+            self.status.setText(f'PAUSED • vision stalled for {age:.1f}s • control disabled')
         item = self.worker.take()
         if not item: return
         frame, hands, features, state, fps, captured = item

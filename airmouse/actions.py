@@ -8,6 +8,7 @@ tracking running.
 import os
 import shlex
 import subprocess
+import threading
 
 from .input import EVDEV_KEYS, PYNPUT_KEYS
 
@@ -62,9 +63,15 @@ def validate(kind, argument):
 
 
 class Dispatcher:
-    """Runs a matched template's binding. One keyboard device is created on
-    first use, so a setup that never binds a key never asks for the extra
-    uinput node."""
+    """Runs a matched template's binding.
+
+    The keyboard device is created once, on a background thread, and only for a
+    setup that actually binds a key. Building it takes real time -- evdev waits
+    on udev to chmod the new node, retrying for up to two seconds -- and this
+    runs on the vision thread holding the controller lock, so doing it inline
+    stalled tracking long enough for the watchdog to disable control. That
+    happened on the first key gesture and never again, the device being cached.
+    """
 
     def __init__(self, app=None, keyboard_factory=None, spawn=None):
         self.app = app                      # called with 'pause' | 'toggle' | 'recenter'
@@ -73,15 +80,44 @@ class Dispatcher:
         self._keyboard = None
         self._factory = keyboard_factory
         self._spawn = spawn or _spawn
+        self._lock = threading.Lock()
+        self._priming = None
+
+    def _build(self):
+        factory = self._factory
+        if factory is None:
+            from .input import create_keyboard
+            factory = create_keyboard
+        return factory()
+
+    def prime(self):
+        """Start building the keyboard device, off whatever thread called.
+
+        Called when a key binding exists, so the device is ready before the
+        gesture that needs it rather than being built underneath it.
+        """
+        with self._lock:
+            if self._keyboard is not None or self._priming is not None:
+                return
+            def build():
+                try:
+                    keyboard = self._build()
+                except Exception as exc:
+                    keyboard, self.error = None, f'keyboard unavailable: {exc}'
+                with self._lock:
+                    self._keyboard = keyboard
+                    self._priming = None
+            self._priming = threading.Thread(target=build, daemon=True)
+            self._priming.start()
+
+    def ready(self):
+        with self._lock:
+            return self._keyboard is not None
 
     def keyboard(self):
-        if self._keyboard is None:
-            factory = self._factory
-            if factory is None:
-                from .input import create_keyboard
-                factory = create_keyboard
-            self._keyboard = factory()
-        return self._keyboard
+        """The device, or None while it is still being built."""
+        with self._lock:
+            return self._keyboard
 
     def run(self, template):
         """Dispatch one match. Returns True when the binding ran."""
@@ -90,7 +126,15 @@ class Dispatcher:
             return False
         try:
             if kind == 'key':
-                self.keyboard().tap(parse_keys(argument))
+                keyboard = self.keyboard()
+                if keyboard is None:
+                    # Never build it here: this is the vision thread, and the
+                    # wait would stall tracking into the watchdog. Start it and
+                    # let the next press land.
+                    self.prime()
+                    self.error = f'{template.name}: keyboard still starting up'
+                    return False
+                keyboard.tap(parse_keys(argument))
             elif kind == 'app':
                 if argument not in APP_ACTIONS:
                     raise ValueError(f'Unknown app action: {argument}')
@@ -109,7 +153,8 @@ class Dispatcher:
         return True
 
     def close(self):
-        keyboard, self._keyboard = self._keyboard, None
+        with self._lock:
+            keyboard, self._keyboard = self._keyboard, None
         if keyboard:
             try:
                 keyboard.close()
