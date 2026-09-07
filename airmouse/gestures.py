@@ -18,6 +18,7 @@ class State(str, Enum):
     RIGHT_CLICK = 'right-click'
     SCROLLING = 'scrolling'
     CUSTOM = 'custom-pose'
+    DRAWING = 'drawing'
     PAUSED = 'paused'
 
 @dataclass
@@ -73,6 +74,18 @@ class GestureMachine:
         self.__init__(self.library)     # templates survive a reset
         self.state = State.PAUSED if paused else State.IDLE
         return actions
+
+    def release(self):
+        """Drop a held button without losing the armed state.
+
+        Used when another mode takes over mid-drag: a full reset would force
+        the user to re-arm with a neutral hand every time.
+        """
+        held = self.down
+        self.down = False
+        self.candidate = None
+        self.state = State.IDLE
+        return [('up',)] if held else []
 
     def step(self, f, now, settings, enabled):
         if not enabled or f is None:

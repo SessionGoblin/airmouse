@@ -55,7 +55,15 @@ Pinches require continuous confirmation (80 ms default). Pointer motion freezes 
 
 Roles are assigned by position and motion, never by the model's handedness label: that classifier flickers exactly when two hands are close or overlapping, which is when a swap would be most damaging. Each hand is matched to where its role is predicted to be, so hands reaching across each other keep their roles through the crossing; two hands crossing at mirrored speeds are momentarily coincident and genuinely ambiguous. A role keeps its slot for 0.4 s after its hand leaves, so a brief dropout does not reshuffle. A lone hand always takes the pointer. **Pointer** selects which side seeds the cursor when both hands first appear — position in the mirrored preview, so your right hand is on the right whatever the label says.
 
-Currently only the pointer hand acts; the modifier is tracked and displayed but not yet bound to anything. Costs frame rate: with two hands enabled the model keeps hunting for a second hand whenever only one is visible, so watch the FPS in the status line and turn it off if it hurts.
+The modifier hand gates drawn gestures (below). Costs frame rate: with two hands enabled the model keeps hunting for a second hand whenever only one is visible, so watch the FPS in the status line and turn it off if it hurts.
+
+## Drawn gestures
+
+**Drawn gestures** records a shape traced with your pointer index finger and binds it to the same actions a pose can trigger. Pinch your modifier hand to start drawing, trace, then open the pinch to finish; the cursor is frozen for the duration, and a drag in progress is released rather than smeared along the stroke.
+
+The modifier pinch is what makes this workable. Because the pointer *is* your hand here, a recognizer running freely over the cursor path would fire during ordinary pointing — knowing where a stroke starts and ends is the hard half of path recognition, and the second hand supplies it for free instead of costing a gesture.
+
+Matching uses the $1 unistroke recognizer: the path is resampled to 64 evenly spaced points, so drawing speed does not matter, then scaled and compared under a small rotation search. **Direction is preserved by default** — classic $1 normalizes every stroke to its own heading, which would make a left swipe, a right swipe and an up swipe the same straight line. **Match at any orientation** opts a stroke out when the shape matters and the angle does not, at the cost of merging strokes that differ only in direction. Measured against synthetic strokes: the same shape redrawn scores .94–.99, perpendicular directions .56, opposite directions .29, and an unrelated scribble .39, against an accept threshold of .78. Strokes are stored in `~/.config/airmouse/strokes.json`, and the recorder warns when a new stroke scores as high against an existing one as a real match would.
 
 ## Custom poses
 

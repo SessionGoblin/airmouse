@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from .config import Settings
 from .controller import Controller
 from .calibration import CalibrationDialog
-from . import actions, perf, poses, roles
+from . import actions, perf, poses, roles, strokes
 
 EDGES = [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),
          (10,11),(11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(0,17),(17,18),(18,19),(19,20)]
@@ -30,14 +30,17 @@ class Window(QMainWindow):
         rect = QApplication.primaryScreen().virtualGeometry()
         screens = [screen.geometry() for screen in QApplication.primaryScreen().virtualSiblings()]
         self.library = poses.Library.load()
+        self.stroke_library = strokes.StrokeLibrary.load()
         # App bindings hop to the GUI thread through the existing hotkey signal,
         # which already exists for exactly this: the dispatcher runs on the
         # vision thread and must not touch widgets.
         self.dispatcher = actions.Dispatcher(app=self.receive_app_action)
         self.controller = Controller(self.settings, (rect.x(), rect.y(), rect.width(), rect.height()),
                                      screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens],
-                                     library=self.library, dispatcher=self.dispatcher)
+                                     library=self.library, dispatcher=self.dispatcher,
+                                     stroke_library=self.stroke_library)
         self.last_features = (None, None)
+        self.last_hands = ([], None)
         self.worker = self.keys = None
         self.calibrating = False
         self.previous_state = ''
@@ -138,6 +141,9 @@ class Window(QMainWindow):
         custom = QPushButton('Custom gestures…')
         custom.clicked.connect(self.edit_gestures)
         form.addRow(custom)
+        drawn = QPushButton('Drawn gestures…')
+        drawn.clicked.connect(self.edit_strokes)
+        form.addRow(drawn)
         self.show_preview = QCheckBox('Show preview')
         self.show_preview.setChecked(True)
         self.show_preview.setToolTip('Turn off to stop all preview rendering; hand tracking and control keep running.')
@@ -146,7 +152,8 @@ class Window(QMainWindow):
         self.debug = QCheckBox('Show tuning diagnostics')
         self.debug.setChecked(debug)
         form.addRow(self.debug)
-        form.addRow(QLabel('Point: index finger\nClick / drag: thumb + index\nRight click: thumb + middle\nScroll: index + middle extended,\nring + little finger folded; move up/down'))
+        form.addRow(QLabel('Draw: pinch the modifier hand, trace with the pointer hand\n'
+                           'Point: index finger\nClick / drag: thumb + index\nRight click: thumb + middle\nScroll: index + middle extended,\nring + little finger folded; move up/down'))
         self.status = QLabel('PAUSED • camera stopped')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -308,6 +315,19 @@ class Window(QMainWindow):
             self.calibrating = False
             self.pause()
 
+    def edit_strokes(self):
+        self.pause()
+        self.calibrating = True
+        try:
+            from .recorder import StrokeDialog
+            dialog = StrokeDialog(self.stroke_library, lambda: self.last_hands, self)
+            if dialog.exec():
+                self.stroke_library = dialog.library
+                self.controller.stroke_library = self.stroke_library
+        finally:
+            self.calibrating = False
+            self.pause()
+
     def calibrate(self):
         self.pause()
         self.calibrating = True
@@ -386,6 +406,7 @@ class Window(QMainWindow):
         self.last_features = (features, time.monotonic())
         pointer = roles.by_role(hands, roles.POINTER)
         points = pointer.points if pointer else None
+        self.last_hands = (hands, time.monotonic())
         h,w = frame.shape[:2]
         if self.show_preview.isChecked() and time.monotonic()-self.last_preview >= self.preview_interval:
             self.last_preview = time.monotonic()
@@ -415,6 +436,10 @@ class Window(QMainWindow):
                 from .gestures import joint_angle
                 text += f'Index PIP angle {joint_angle(points, 5, 6, 8):.1f}°; middle PIP angle {joint_angle(points, 9, 10, 12):.1f}°\n'
                 text += self.pose_diagnostics(features)
+                name, rating = self.controller.last_stroke
+                if name:
+                    verdict = 'matched' if rating >= strokes.THRESHOLD else 'below threshold'
+                    text += f'Last stroke: nearest "{name}" {rating:.3f} -> {verdict}\n'
                 text += ' '.join(f'{i}:({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})' for i,p in enumerate(points))+'\n'
             self.diagnostics.setPlainText(text+'\n'.join(self.transitions))
 

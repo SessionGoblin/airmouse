@@ -82,9 +82,12 @@ class VisionWorker:
                     stamp, frame, tracker, time.monotonic(), assigner)
                 now = time.monotonic()
                 pointer = roles.by_role(hands, roles.POINTER)
+                modifier = roles.by_role(hands, roles.MODIFIER)
                 features = pointer.features if pointer else None
-                if now-stamp > STALE: features = None
-                state = self.controller.process(features, now)
+                gate = modifier.features if modifier else None
+                if now-stamp > STALE: features = gate = None
+                self.controller.aspect = frame.shape[1] / frame.shape[0]
+                state = self.controller.process(features, now, gate)
                 fps = 1/max(.001, now-previous)
                 previous = now
                 self.last_frame = now

@@ -336,3 +336,238 @@ class GestureDialog(QDialog):
             self.error.setText(f'Could not save gestures: {exc}')
             return
         self.accept()
+
+
+class DrawDialog(QDialog):
+    """Capture one stroke: pinch the modifier hand, trace, then release."""
+
+    def __init__(self, source, name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f'Drawing "{name}"')
+        self.source = source            # callable -> (hands, timestamp)
+        self.name = name
+        self.stroke = None
+        self.path = []
+        self.aspect = 4/3
+        self.drawing = False
+        layout = QVBoxLayout(self)
+        self.message = QLabel()
+        self.message.setAlignment(Qt.AlignCenter)
+        self.message.setStyleSheet('font-size: 20px; padding: 18px')
+        layout.addWidget(self.message)
+        self.detail = QLabel('Pinch your modifier hand to start drawing, trace the shape with '
+                             'your pointer index finger, then open the pinch to finish.')
+        self.detail.setWordWrap(True)
+        layout.addWidget(self.detail)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.sample)
+        self.timer.start(25)
+
+    def sample(self):
+        from . import roles, strokes
+        hands, stamp = self.source()
+        if stamp is None or time.monotonic()-stamp > FRESH:
+            self.message.setText('No camera frames')
+            return
+        pointer = roles.by_role(hands, roles.POINTER)
+        modifier = roles.by_role(hands, roles.MODIFIER)
+        if modifier is None or modifier.features is None:
+            self.message.setText('Show your modifier hand')
+            return
+        if pointer is None or pointer.features is None:
+            self.message.setText('Show your pointer hand')
+            return
+        gating = modifier.features.left < .32
+        if gating:
+            self.drawing = True
+            self.path.append(tuple(pointer.features.point[:2]))
+            self.message.setText('Drawing…')
+            self.detail.setText(f'{len(self.path)} points')
+            return
+        if not self.drawing:
+            self.message.setText('Pinch the modifier hand to start')
+            return
+        self.timer.stop()
+        points = strokes.canonical(self.path, self.aspect)
+        if points is None:
+            self.message.setText('Stroke too short')
+            self.detail.setText('Draw a larger shape, holding the pinch throughout.')
+            return
+        self.stroke = strokes.Stroke(name=self.name, points=tuple(points))
+        self.accept()
+
+
+class StrokeDialog(QDialog):
+    """Manage drawn strokes and their bindings."""
+
+    def __init__(self, library, source, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Drawn gestures • control remains paused')
+        self.resize(620, 420)
+        from . import strokes
+        self.library = strokes.StrokeLibrary(list(library.strokes))
+        self.source = source
+        layout = QVBoxLayout(self)
+        columns = QHBoxLayout()
+        layout.addLayout(columns, 1)
+        left = QVBoxLayout()
+        columns.addLayout(left)
+        self.list = QListWidget()
+        self.list.currentRowChanged.connect(self.select)
+        left.addWidget(self.list, 1)
+        self.draw_button = QPushButton('Draw new gesture…')
+        self.draw_button.clicked.connect(lambda: self.draw(None))
+        left.addWidget(self.draw_button)
+        self.redraw = QPushButton('Redraw selected')
+        self.redraw.clicked.connect(lambda: self.draw(self.current()))
+        left.addWidget(self.redraw)
+        self.delete = QPushButton('Delete selected')
+        self.delete.clicked.connect(self.remove)
+        left.addWidget(self.delete)
+
+        panel = QGroupBox('When this stroke is drawn')
+        form = QFormLayout(panel)
+        columns.addWidget(panel, 1)
+        self.kind = QComboBox()
+        for key, label in [('none', 'Nothing'), ('key', 'Press a shortcut'),
+                           ('app', 'Control AirMouse'), ('shell', 'Run a command')]:
+            self.kind.addItem(label, key)
+        self.kind.currentIndexChanged.connect(self.kind_changed)
+        form.addRow('Action', self.kind)
+        self.argument = QLineEdit()
+        self.argument.textEdited.connect(self.store)
+        form.addRow('Shortcut', self.argument)
+        self.app_action = QComboBox()
+        for key, label in [('pause', 'Pause control'), ('toggle', 'Pause / resume'),
+                           ('recenter', 'Recentre pointer')]:
+            self.app_action.addItem(label, key)
+        self.app_action.currentIndexChanged.connect(self.store)
+        form.addRow('Command', self.app_action)
+        self.rotation = QCheckBox('Match at any orientation')
+        self.rotation.setToolTip('Off keeps direction meaningful, so a left swipe and a right '
+                                 'swipe stay different gestures. On matches the shape however '
+                                 'it is turned, which merges strokes that differ only in '
+                                 'direction.')
+        self.rotation.toggled.connect(self.store)
+        form.addRow(self.rotation)
+        self.warning = QLabel()
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet('color: #d08a30')
+        form.addRow(self.warning)
+
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.setStyleSheet('color: #c05055')
+        layout.addWidget(self.error)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.apply)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.refresh()
+
+    def current(self):
+        row = self.list.currentRow()
+        return self.library.strokes[row] if 0 <= row < len(self.library.strokes) else None
+
+    def refresh(self, select=None):
+        self.list.blockSignals(True)
+        self.list.clear()
+        for stroke in self.library.strokes:
+            self.list.addItem(f'{stroke.name} — {stroke.argument or "unbound"}')
+        if select is not None:
+            self.list.setCurrentRow(select)
+        elif self.library.strokes:
+            self.list.setCurrentRow(0)
+        self.list.blockSignals(False)
+        self.select(self.list.currentRow())
+
+    def select(self, row):
+        stroke = self.current()
+        for widget in (self.kind, self.argument, self.app_action, self.rotation,
+                       self.redraw, self.delete):
+            widget.setEnabled(stroke is not None)
+        if stroke is None:
+            self.warning.clear()
+            return
+        for widget in (self.kind, self.argument, self.app_action, self.rotation):
+            widget.blockSignals(True)
+        self.kind.setCurrentIndex(max(0, self.kind.findData(stroke.action or 'none')))
+        self.argument.setText(stroke.argument if stroke.action != 'app' else '')
+        if stroke.action == 'app':
+            self.app_action.setCurrentIndex(max(0, self.app_action.findData(stroke.argument)))
+        self.rotation.setChecked(stroke.free_rotation)
+        for widget in (self.kind, self.argument, self.app_action, self.rotation):
+            widget.blockSignals(False)
+        self.kind_changed()
+
+    def kind_changed(self):
+        kind = self.kind.currentData()
+        self.argument.setVisible(kind in ('key', 'shell'))
+        self.app_action.setVisible(kind == 'app')
+        self.argument.setPlaceholderText('ctrl+alt+t' if kind == 'key' else 'firefox --new-window')
+        self.store()
+
+    def store(self):
+        stroke = self.current()
+        if stroke is None:
+            return
+        kind = self.kind.currentData()
+        stroke.action = kind
+        stroke.argument = (self.app_action.currentData() if kind == 'app'
+                           else self.argument.text() if kind in ('key', 'shell') else '')
+        stroke.free_rotation = self.rotation.isChecked()
+        row = self.list.currentRow()
+        if row >= 0:
+            self.list.blockSignals(True)
+            self.list.item(row).setText(f'{stroke.name} — {stroke.argument or "unbound"}')
+            self.list.blockSignals(False)
+
+    def draw(self, existing=None):
+        name = existing.name if existing else self.unique_name()
+        dialog = DrawDialog(self.source, name, self)
+        if not dialog.exec() or dialog.stroke is None:
+            return
+        stroke = dialog.stroke
+        if existing is not None:
+            stroke.action, stroke.argument = existing.action, existing.argument
+            stroke.free_rotation = existing.free_rotation
+        clash = self.library.conflict(stroke)
+        self.library.replace(stroke)
+        self.refresh(select=[s.name for s in self.library.strokes].index(stroke.name))
+        self.warning.setText(
+            f'Scores as high against "{clash.name}" as a real match would — the two cannot be '
+            'told apart. Redraw one of them with a clearly different shape.' if clash else '')
+
+    def unique_name(self):
+        taken = {s.name for s in self.library.strokes}
+        n = 1
+        while f'Stroke {n}' in taken:
+            n += 1
+        return f'Stroke {n}'
+
+    def remove(self):
+        stroke = self.current()
+        if stroke is None:
+            return
+        if QMessageBox.question(self, 'Delete gesture', f'Delete "{stroke.name}"?') \
+                != QMessageBox.Yes:
+            return
+        self.library.remove(stroke.name)
+        self.refresh()
+
+    def apply(self):
+        for stroke in self.library.strokes:
+            try:
+                stroke.argument = actions.validate(stroke.action, stroke.argument)
+            except ValueError as exc:
+                self.error.setText(f'{stroke.name}: {exc}')
+                return
+        try:
+            self.library.save()
+        except OSError as exc:
+            self.error.setText(f'Could not save gestures: {exc}')
+            return
+        self.accept()

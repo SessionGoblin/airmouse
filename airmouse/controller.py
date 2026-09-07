@@ -2,15 +2,22 @@ import threading
 import math
 from .gestures import GestureMachine, State
 from .mapping import CursorMapper
+from . import strokes as strokes_module
 
 class Controller:
     """Serialized control gate, including emergency release from keyboard thread."""
     def __init__(self, settings, bounds, backend=None, screens=None,
-                 library=None, dispatcher=None):
+                 library=None, dispatcher=None, stroke_library=None):
         self.settings, self.backend = settings, backend
         self.mapper = CursorMapper(bounds, screens)
         self.machine = GestureMachine(library)
         self.dispatcher = dispatcher
+        self.stroke_library = stroke_library
+        self.capture = strokes_module.StrokeCapture()
+        # Frame aspect, so a drawn path is compared in the same stretched space
+        # the poses use. Set by the worker once the frame size is known.
+        self.aspect = 4/3
+        self.last_stroke = (None, 0.0)
         self.lock = threading.RLock()
         self.enabled = False
         self.last = None
@@ -35,6 +42,7 @@ class Controller:
                 self.drag_cursor = None
                 self.drag_started = False
                 self.raw_point = None
+                self.capture.reset()
 
     def resume(self):
         with self.lock:
@@ -43,7 +51,7 @@ class Controller:
             self.enabled = True
             return True
 
-    def process(self, features, now):
+    def process(self, features, now, modifier=None):
         with self.lock:
             if features:
                 valid = all(math.isfinite(v) for v in (*features.point, features.left, features.right))
@@ -66,6 +74,21 @@ class Controller:
             dt = min(.1, now-self.last) if self.last is not None else 1/30
             self.last = now
             self.last_seen = now if features else None
+            # The modifier hand gates stroke drawing. Without a gate a
+            # recognizer running over the cursor path would fire during
+            # ordinary pointing, because here the pointer is the hand.
+            gating = bool(self.settings.strokes and self.enabled and modifier is not None
+                          and modifier.left < self.settings.pinch)
+            drawn = self.capture.update(gating, features.point if features else None)
+            if drawn is not None:
+                self.recognize(drawn)
+            if gating:
+                # Freeze the cursor while drawing, and drop a drag rather than
+                # smearing the window along the stroke.
+                for action in self.machine.release():
+                    if self.backend: self.backend.up()
+                self.machine.state = State.DRAWING
+                return State.DRAWING.value
             if self.mapper.filter.value is None and features:
                 # Slew from current desktop position on X11; virtual absolute pointer
                 # starts at centre and approaches the hand slowly on acquisition.
@@ -127,6 +150,18 @@ class Controller:
                 elif action[0] == 'scroll': self.backend.scroll(action[1])
                 else: getattr(self.backend, action[0])()
             return self.machine.state.value
+
+    def recognize(self, path):
+        """Score a finished stroke and run whatever it is bound to."""
+        points = strokes_module.canonical(path, self.aspect)
+        if self.stroke_library is None or points is None:
+            self.last_stroke = (None, 0.0)
+            return
+        nearest, rating = self.stroke_library.nearest(points)
+        self.last_stroke = (nearest.name if nearest else None, rating)
+        stroke = self.stroke_library.match(points)
+        if stroke is not None:
+            self.custom(stroke)
 
     def custom(self, template):
         """Run a matched template's binding.
