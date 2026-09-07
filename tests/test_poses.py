@@ -205,3 +205,66 @@ def test_reset_keeps_the_template_library():
     f = custom_features(pose)
     machine.step(f, 1.0, S, True)
     assert machine.step(f, 1.0 + S.custom_dwell + .01, S, True)[0][0] == 'custom'
+
+
+def test_threshold_floor_accepts_the_same_pose_re_formed():
+    """The regression that made every recorded gesture dead on arrival: the
+    accept radius was set below the frame-to-frame variation of a single pose,
+    so nothing ever matched its own template."""
+    import random
+    base = hand(4)
+    samples = []
+    for i in range(30):                     # a steady hold, as the recorder sees it
+        rng = random.Random(i)
+        jittered = [(x+rng.gauss(0, .002), y+rng.gauss(0, .002), z) for x, y, z in base]
+        samples.append(poses.normalize(jittered, 1.0)[0])
+    template = poses.build('held', samples)
+    # The same pose re-formed later, with realistic landmark noise.
+    misses = 0
+    for i in range(40):
+        rng = random.Random(1000+i)
+        again = [(x+rng.gauss(0, .012), y+rng.gauss(0, .012), z) for x, y, z in base]
+        if template.matches(poses.normalize(again, 1.0)[0], None) is None:
+            misses += 1
+    assert misses == 0, f'{misses}/40 re-formed poses fell outside the radius'
+
+
+def test_distinct_shapes_stay_far_outside_the_radius():
+    """The floor may be generous, but different hand shapes sit far enough
+    apart that it does not cause collisions."""
+    a, _ = poses.normalize(hand(1), 1.0)
+    template = poses.Template(name='a', pose=a, threshold=poses.MAX_THRESHOLD)
+    for seed in range(2, 12):
+        other, _ = poses.normalize(hand(seed), 1.0)
+        assert template.matches(other, None) is None
+
+
+def test_old_tight_templates_are_widened_on_load(tmp_path):
+    """Gestures recorded before the floor was corrected must start working
+    rather than staying silently dead."""
+    pose, _ = poses.normalize(hand(), 1.0)
+    path = tmp_path/'gestures.json'
+    poses.Library([poses.Template(name='old', pose=pose, threshold=.06)]).save(path)
+    assert poses.Library.load(path).templates[0].threshold == poses.MIN_THRESHOLD
+
+
+def test_conflict_uses_the_accept_radius_not_a_constant():
+    """Two templates overlap when their centres are closer than a radius, so
+    the check scales with how wide the templates actually are."""
+    a, _ = poses.normalize(hand(1), 1.0)
+    b, _ = poses.normalize(hand(2), 1.0)
+    gap = poses.distance(a, b)
+    narrow = poses.Library([poses.Template(name='a', pose=a, threshold=gap*.5)])
+    assert narrow.conflict(poses.Template(name='b', pose=b, threshold=gap*.5)) is None
+    wide = poses.Library([poses.Template(name='a', pose=a, threshold=gap*1.2)])
+    assert wide.conflict(poses.Template(name='b', pose=b, threshold=gap*1.2)).name == 'a'
+
+
+def test_nearest_reports_distance_even_when_nothing_matches():
+    a, _ = poses.normalize(hand(1), 1.0)
+    b, _ = poses.normalize(hand(7), 1.0)
+    library = poses.Library([poses.Template(name='a', pose=a, threshold=.01)])
+    assert library.match(b, None) is None
+    template, gap = library.nearest(b)
+    assert template.name == 'a' and gap > .01
+    assert poses.Library().nearest(a) == (None, None)

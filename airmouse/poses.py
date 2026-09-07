@@ -15,14 +15,17 @@ GESTURE_PATH = Path.home() / '.config' / 'airmouse' / 'gestures.json'
 WRIST, MIDDLE_MCP = 0, 9
 LANDMARKS = 21
 
-# Recorded spread is multiplied by this to set a template's accept radius, then
-# clamped: too tight and the pose never fires, too loose and it shadows others.
-SPREAD_MARGIN = 2.5
-MIN_THRESHOLD = .06
+# Recorded spread widens a template's accept radius, but it is only a floor
+# adjustment: the spread across one held recording measures landmark jitter over
+# a second, not how differently the same pose gets formed on a later occasion,
+# which is far larger. The floor is what actually decides most matches.
+#
+# Measured in these units: the same pose re-formed lands .03-.23 away, while
+# genuinely different hand shapes sit .67-1.1 apart. The floor sits above the
+# first range and the cap well below the second, so there is room for both.
+SPREAD_MARGIN = 3.5
+MIN_THRESHOLD = .18
 MAX_THRESHOLD = .35
-# Two templates closer than this are near-duplicates; whichever is nearer wins
-# every frame and the other is effectively unreachable.
-DISTINCT = .12
 
 
 def normalize(points, aspect=4/3):
@@ -94,9 +97,9 @@ class Template:
 def build(name, samples, orientations=None, **binding):
     """Average recorded samples into a template and size its accept radius.
 
-    The threshold comes from how much the samples varied while the pose was
-    held, so a shaky pose gets a roomier radius than a steady one instead of
-    every template sharing one guessed constant.
+    The spread across the hold only widens the radius for a genuinely unsteady
+    recording; for a normal one it lands under MIN_THRESHOLD and the floor
+    decides. That is deliberate -- see the note on the constants above.
     """
     if not samples:
         raise ValueError('No samples recorded')
@@ -129,19 +132,34 @@ class Library:
         return best[0] if best else None
 
     def conflict(self, candidate):
-        """Existing template a candidate is too close to, if any.
+        """Existing template a candidate overlaps, if any.
 
-        Checked at record time: a near-duplicate is not a recognition bug that
-        shows up later, it is a template that can never win a comparison.
+        Overlap is measured against the templates' own radii rather than a fixed
+        constant: if the centres are closer than one accept radius, each pose
+        falls inside the other's region and the nearer one wins every frame,
+        leaving the other unreachable. Checked at record time, because this is
+        not a recognition bug that shows up later -- it is a template that can
+        never win a comparison.
         """
         for template in self.templates:
             if template.name == candidate.name:
                 continue
             if not template.pose or not candidate.pose:
                 continue
-            if distance(candidate.pose, template.pose) < DISTINCT:
+            if distance(candidate.pose, template.pose) < max(candidate.threshold,
+                                                             template.threshold):
                 return template
         return None
+
+    def nearest(self, pose, orientation=None):
+        """Closest template and its distance, ignoring thresholds.
+
+        For diagnostics: shows how near a pose came when nothing matched.
+        """
+        if pose is None or not self.templates:
+            return None, None
+        scored = [(t, distance(pose, t.pose)) for t in self.templates if t.pose]
+        return min(scored, key=lambda pair: pair[1]) if scored else (None, None)
 
     def replace(self, template):
         self.templates = [t for t in self.templates if t.name != template.name]
@@ -162,6 +180,9 @@ class Library:
             try:
                 template = Template(**entry)
                 template.pose = tuple(tuple(float(v) for v in p) for p in template.pose)
+                # Widen templates recorded under an older, far too tight floor;
+                # they would otherwise never match the pose they came from.
+                template.threshold = max(template.threshold, MIN_THRESHOLD)
                 if len(template.pose) == LANDMARKS:
                     templates.append(template)
             except (TypeError, ValueError):

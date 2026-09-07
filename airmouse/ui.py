@@ -1,4 +1,5 @@
 import argparse
+import math
 import sys
 import time
 from dataclasses import replace
@@ -378,8 +379,35 @@ class Window(QMainWindow):
                 text += f'Pinch / palm: index {features.left:.3f}, middle {features.right:.3f}; scroll pose {features.scroll}\n'
                 from .gestures import joint_angle
                 text += f'Index PIP angle {joint_angle(points, 5, 6, 8):.1f}°; middle PIP angle {joint_angle(points, 9, 10, 12):.1f}°\n'
+                text += self.pose_diagnostics(features)
                 text += ' '.join(f'{i}:({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})' for i,p in enumerate(points))+'\n'
             self.diagnostics.setPlainText(text+'\n'.join(self.transitions))
+
+    def pose_diagnostics(self, features):
+        """Why a custom pose did or did not fire, in the units it is judged in.
+
+        Reports the nearest template with its distance and accept radius, since
+        a pose that never fires looks identical to one that is not recognized at
+        all. Arming is included because no gesture of any kind is considered
+        until a neutral open hand has been held for the arming dwell.
+        """
+        if not self.library.templates:
+            return 'Custom poses: none recorded\n'
+        if not self.settings.custom:
+            return 'Custom poses: disabled in settings\n'
+        template, gap = self.library.nearest(features.pose)
+        if template is None:
+            return 'Custom poses: no pose from this frame\n'
+        verdict = 'MATCH' if gap <= template.threshold else 'too far'
+        if (gap <= template.threshold and template.orientation is not None
+                and features.orientation is not None):
+            from . import poses as _poses
+            off = abs(_poses.angle_delta(features.orientation, template.orientation))
+            if off > template.tolerance:
+                verdict = f'shape ok, tilt off by {math.degrees(off):.0f}°'
+        armed = 'armed' if self.controller.machine.armed else 'NOT armed (hold an open hand)'
+        return (f'Nearest pose "{template.name}" {gap:.3f} / {template.threshold:.3f} '
+                f'-> {verdict} • {armed}\n')
 
     def closeEvent(self, event):
         self.stop()
