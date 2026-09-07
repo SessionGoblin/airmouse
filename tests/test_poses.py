@@ -28,33 +28,33 @@ def transform(points, angle=0.0, scale=1.0, dx=0.0, dy=0.0):
 def test_pose_is_invariant_to_position_scale_and_tilt():
     """The same shape held elsewhere in frame, nearer the camera, and tilted
     must land on one template rather than needing one template per pose."""
-    base, _ = poses.normalize(hand(), 1.0)
-    moved, _ = poses.normalize(transform(hand(), angle=.45, scale=1.8, dx=.12, dy=-.07), 1.0)
+    base, _, _ = poses.normalize(hand(), 1.0)
+    moved, _, _ = poses.normalize(transform(hand(), angle=.45, scale=1.8, dx=.12, dy=-.07), 1.0)
     assert poses.distance(base, moved) < 1e-9
 
 
 def test_orientation_tracks_tilt_so_flipped_poses_stay_separable():
     """Thumbs-up and thumbs-down are the same shape; only orientation splits
     them, so rotation normalization must not throw the angle away."""
-    _, upright = poses.normalize(hand(), 1.0)
-    _, rolled = poses.normalize(transform(hand(), angle=.6), 1.0)
+    _, upright, _ = poses.normalize(hand(), 1.0)
+    _, rolled, _ = poses.normalize(transform(hand(), angle=.6), 1.0)
     assert abs(poses.angle_delta(rolled, upright) - .6) < 1e-9
-    _, flipped = poses.normalize(transform(hand(), angle=math.pi), 1.0)
+    _, flipped, _ = poses.normalize(transform(hand(), angle=math.pi), 1.0)
     assert abs(abs(poses.angle_delta(flipped, upright)) - math.pi) < 1e-9
 
 
 def test_wrist_anchors_the_frame_and_span_becomes_the_unit():
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     assert pose[poses.WRIST] == pytest.approx((0.0, 0.0), abs=1e-9)
     # The wrist -> middle-MCP span is rotated onto "up" and scaled to 1.
     assert pose[poses.MIDDLE_MCP] == pytest.approx((0.0, -1.0), abs=1e-9)
 
 
 def test_degenerate_hands_do_not_produce_a_pose():
-    assert poses.normalize(None, 1.0) == (None, None)
-    assert poses.normalize([(0., 0., 0.)]*5, 1.0) == (None, None)
+    assert poses.normalize(None, 1.0) == (None, None, None)
+    assert poses.normalize([(0., 0., 0.)]*5, 1.0) == (None, None, None)
     flat = [(.5, .5, 0.)]*21                    # wrist and MCP coincident
-    assert poses.normalize(flat, 1.0) == (None, None)
+    assert poses.normalize(flat, 1.0) == (None, None, None)
 
 
 def test_threshold_follows_recorded_spread():
@@ -74,8 +74,8 @@ def test_orientation_averages_across_the_pi_wrap():
 
 
 def test_match_picks_the_closest_accepting_template():
-    near, _ = poses.normalize(hand(1), 1.0)
-    far, _ = poses.normalize(hand(7), 1.0)
+    near, _, _ = poses.normalize(hand(1), 1.0)
+    far, _, _ = poses.normalize(hand(7), 1.0)
     library = poses.Library([
         poses.Template(name='near', pose=near, threshold=.5),
         poses.Template(name='far', pose=far, threshold=.5),
@@ -84,14 +84,14 @@ def test_match_picks_the_closest_accepting_template():
 
 
 def test_match_rejects_a_pose_outside_every_radius():
-    near, _ = poses.normalize(hand(1), 1.0)
-    far, _ = poses.normalize(hand(7), 1.0)
+    near, _, _ = poses.normalize(hand(1), 1.0)
+    far, _, _ = poses.normalize(hand(7), 1.0)
     library = poses.Library([poses.Template(name='near', pose=near, threshold=.01)])
     assert library.match(far, 0.0) is None
 
 
 def test_orientation_bound_rejects_the_same_shape_at_the_wrong_tilt():
-    pose, angle = poses.normalize(hand(), 1.0)
+    pose, angle, _ = poses.normalize(hand(), 1.0)
     template = poses.Template(name='up', pose=pose, threshold=.5,
                               orientation=angle, tolerance=math.radians(30))
     assert template.matches(pose, angle) is not None
@@ -101,7 +101,7 @@ def test_orientation_bound_rejects_the_same_shape_at_the_wrong_tilt():
 
 
 def test_conflict_flags_a_near_duplicate_that_could_never_win():
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     library = poses.Library([poses.Template(name='first', pose=pose, threshold=.2)])
     twin = poses.Template(name='second', pose=pose, threshold=.2)
     assert library.conflict(twin).name == 'first'
@@ -110,7 +110,7 @@ def test_conflict_flags_a_near_duplicate_that_could_never_win():
 
 
 def test_library_round_trips_through_disk(tmp_path):
-    pose, angle = poses.normalize(hand(), 1.0)
+    pose, angle, _ = poses.normalize(hand(), 1.0)
     library = poses.Library([poses.Template(name='fist', action='shell', argument='true',
                                             pose=pose, threshold=.2, orientation=angle)])
     path = tmp_path / 'gestures.json'
@@ -147,7 +147,7 @@ def custom_features(pose, angle=0.0):
 
 
 def test_custom_pose_fires_once_after_its_dwell():
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     machine, template = machine_with(pose)
     machine.armed = True
     f = custom_features(pose)
@@ -161,7 +161,7 @@ def test_custom_pose_fires_once_after_its_dwell():
 
 
 def test_leaving_and_re_forming_the_pose_fires_again():
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     machine, template = machine_with(pose)
     machine.armed = True
     f = custom_features(pose)
@@ -173,7 +173,7 @@ def test_leaving_and_re_forming_the_pose_fires_again():
 
 
 def test_custom_poses_can_be_switched_off():
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     machine, _ = machine_with(pose)
     machine.armed = True
     off = Settings(custom=False)
@@ -186,7 +186,7 @@ def test_custom_poses_can_be_switched_off():
 def test_a_drag_in_progress_outranks_a_matching_pose():
     """Templates are matched before the pinches, but never while the button is
     already down, or a pose crossed mid-drag would drop the window."""
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     machine, _ = machine_with(pose)
     machine.armed = True
     machine.down, machine.pressed_at = True, 0.0
@@ -197,7 +197,7 @@ def test_a_drag_in_progress_outranks_a_matching_pose():
 
 def test_reset_keeps_the_template_library():
     """reset() re-runs __init__; the library must survive a lost hand."""
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     machine, _ = machine_with(pose)
     machine.reset()
     assert machine.library is not None
@@ -232,17 +232,17 @@ def test_threshold_floor_accepts_the_same_pose_re_formed():
 def test_distinct_shapes_stay_far_outside_the_radius():
     """The floor may be generous, but different hand shapes sit far enough
     apart that it does not cause collisions."""
-    a, _ = poses.normalize(hand(1), 1.0)
+    a, _, _ = poses.normalize(hand(1), 1.0)
     template = poses.Template(name='a', pose=a, threshold=poses.MAX_THRESHOLD)
     for seed in range(2, 12):
-        other, _ = poses.normalize(hand(seed), 1.0)
+        other, _, _ = poses.normalize(hand(seed), 1.0)
         assert template.matches(other, None) is None
 
 
 def test_old_tight_templates_are_widened_on_load(tmp_path):
     """Gestures recorded before the floor was corrected must start working
     rather than staying silently dead."""
-    pose, _ = poses.normalize(hand(), 1.0)
+    pose, _, _ = poses.normalize(hand(), 1.0)
     path = tmp_path/'gestures.json'
     poses.Library([poses.Template(name='old', pose=pose, threshold=.06)]).save(path)
     assert poses.Library.load(path).templates[0].threshold == poses.MIN_THRESHOLD
@@ -251,8 +251,8 @@ def test_old_tight_templates_are_widened_on_load(tmp_path):
 def test_conflict_uses_the_accept_radius_not_a_constant():
     """Two templates overlap when their centres are closer than a radius, so
     the check scales with how wide the templates actually are."""
-    a, _ = poses.normalize(hand(1), 1.0)
-    b, _ = poses.normalize(hand(2), 1.0)
+    a, _, _ = poses.normalize(hand(1), 1.0)
+    b, _, _ = poses.normalize(hand(2), 1.0)
     gap = poses.distance(a, b)
     narrow = poses.Library([poses.Template(name='a', pose=a, threshold=gap*.5)])
     assert narrow.conflict(poses.Template(name='b', pose=b, threshold=gap*.5)) is None
@@ -261,10 +261,82 @@ def test_conflict_uses_the_accept_radius_not_a_constant():
 
 
 def test_nearest_reports_distance_even_when_nothing_matches():
-    a, _ = poses.normalize(hand(1), 1.0)
-    b, _ = poses.normalize(hand(7), 1.0)
+    a, _, _ = poses.normalize(hand(1), 1.0)
+    b, _, _ = poses.normalize(hand(7), 1.0)
     library = poses.Library([poses.Template(name='a', pose=a, threshold=.01)])
     assert library.match(b, None) is None
     template, gap = library.nearest(b)
     assert template.name == 'a' and gap > .01
     assert poses.Library().nearest(a) == (None, None)
+
+
+def other_hand(points):
+    """The same shape made with the other hand: a mirror about a vertical axis."""
+    return [(1.0-x, y, z) for x, y, z in points]
+
+
+def test_a_pose_recorded_with_one_hand_works_with_the_other():
+    """The reported bug: without chirality normalization the same shape made
+    with the other hand landed ~.66 away, as far as an unrelated gesture."""
+    right = hand(1)
+    pose, _, _ = poses.normalize(right, 1.0)
+    template = poses.build('wave', [pose])
+    left, _, _ = poses.normalize(other_hand(right), 1.0)
+    assert poses.distance(pose, left) < 1e-9
+    assert template.matches(left, None, None) is not None
+
+
+def test_chirality_reports_opposite_signs_for_opposite_hands():
+    right = hand(1)
+    _, _, a = poses.normalize(right, 1.0)
+    _, _, b = poses.normalize(other_hand(right), 1.0)
+    assert a is not None and b is not None and a == -b
+
+
+def test_a_hand_locked_template_rejects_the_other_hand():
+    right = hand(1)
+    pose, _, chirality = poses.normalize(right, 1.0)
+    template = poses.build('right only', [pose], chiralities=[chirality])
+    assert template.chirality == chirality
+    left, _, other = poses.normalize(other_hand(right), 1.0)
+    assert template.matches(left, None, other) is None      # same shape, wrong hand
+    assert template.matches(pose, None, chirality) is not None
+
+
+def test_an_edge_on_palm_reports_no_chirality_instead_of_guessing():
+    """Near edge-on the palm triangle collapses and the sign is noise; a
+    confident answer there is what makes a locked template flicker."""
+    flat = list(hand(1))
+    # Collapse index and pinky MCP onto the wrist-to-middle axis.
+    flat[poses.INDEX_MCP] = (.5, .62, 0.)
+    flat[poses.PINKY_MCP] = (.5, .60, 0.)
+    pose, _, chirality = poses.normalize(flat, 1.0)
+    assert abs(poses.winding(pose)) < poses.AMBIGUOUS
+    assert chirality is None
+
+
+def test_hand_agnostic_templates_survive_a_flipped_mirror():
+    """A template that does not care which hand it is must not inherit the
+    mirror-flapping that happens when the winding sign is marginal."""
+    pose, _, _ = poses.normalize(hand(1), 1.0)
+    template = poses.build('either', [pose])
+    assert template.chirality is None
+    assert template.matches(poses.mirrored(pose), None, None) is not None
+
+
+def test_templates_saved_before_chirality_are_canonicalized_on_load(tmp_path):
+    pose, _, _ = poses.normalize(hand(1), 1.0)
+    flipped = poses.mirrored(pose)               # as an old left-hand recording stored it
+    path = tmp_path/'gestures.json'
+    poses.Library([poses.Template(name='old', pose=flipped, threshold=.2)]).save(path)
+    loaded = poses.Library.load(path).templates[0]
+    assert poses.distance(loaded.pose, poses.canonical(flipped)) < 1e-9
+    assert loaded.matches(pose, None, None) is not None
+
+
+def test_build_majority_votes_the_recorded_hand():
+    """One frame of the palm rolling past edge-on should not decide which hand
+    the template belongs to."""
+    pose, _, _ = poses.normalize(hand(1), 1.0)
+    assert poses.build('a', [pose]*5, chiralities=[1, 1, 1, -1, 1]).chirality == 1
+    assert poses.build('b', [pose]*5, chiralities=[-1, -1, -1, 1, -1]).chirality == -1

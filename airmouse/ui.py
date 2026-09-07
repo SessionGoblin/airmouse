@@ -405,9 +405,18 @@ class Window(QMainWindow):
             off = abs(_poses.angle_delta(features.orientation, template.orientation))
             if off > template.tolerance:
                 verdict = f'shape ok, tilt off by {math.degrees(off):.0f}°'
+        if (gap <= template.threshold and template.chirality is not None
+                and features.chirality is not None
+                and features.chirality != template.chirality):
+            verdict = 'shape ok, wrong hand'
         armed = 'armed' if self.controller.machine.armed else 'NOT armed (hold an open hand)'
+        from . import poses as _poses
+        turn = _poses.winding(features.pose)
+        hand = ('either' if template.chirality is None else
+                f'locked, this hand {features.chirality}')
         return (f'Nearest pose "{template.name}" {gap:.3f} / {template.threshold:.3f} '
-                f'-> {verdict} • {armed}\n')
+                f'-> {verdict} • {armed}\n'
+                f'Palm winding {turn:+.2f} (ambiguous under {_poses.AMBIGUOUS}) • hand {hand}\n')
 
     def closeEvent(self, event):
         self.stop()

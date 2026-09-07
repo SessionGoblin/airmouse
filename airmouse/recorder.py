@@ -33,6 +33,7 @@ class RecordDialog(QDialog):
         self.template = None
         self.samples = []
         self.orientations = []
+        self.chiralities = []
         self.built_ins = []
         self.previous = None
         self.started = time.monotonic()
@@ -61,6 +62,7 @@ class RecordDialog(QDialog):
             self.started = time.monotonic()
             self.samples.clear()
             self.orientations.clear()
+            self.chiralities.clear()
             self.previous = None
             return
         if elapsed < COUNTDOWN:
@@ -73,6 +75,7 @@ class RecordDialog(QDialog):
         if self.previous is None or poses.distance(features.pose, self.previous) < STABLE_MOVE:
             self.samples.append(features.pose)
             self.orientations.append(features.orientation)
+            self.chiralities.append(features.chirality)
             self.built_ins.append((features.left, features.right, features.scroll))
         self.previous = features.pose
         self.detail.setText(f'{len(self.samples)} steady frames captured')
@@ -86,7 +89,8 @@ class RecordDialog(QDialog):
             self.detail.setText(f'Only {len(self.samples)} usable frames. Close and try again, '
                                 'holding the pose still under even lighting.')
             return
-        self.template = poses.build(self.name, self.samples, self.orientations)
+        self.template = poses.build(self.name, self.samples, self.orientations,
+                                    self.chiralities)
         self.accept()
 
     def shadows(self, settings):
@@ -165,6 +169,12 @@ class GestureDialog(QDialog):
             self.app_action.addItem(label, key)
         self.app_action.currentIndexChanged.connect(self.store)
         form.addRow('Command', self.app_action)
+        self.hand = QCheckBox('Only match with the hand it was recorded with')
+        self.hand.setToolTip('Off by default, so a pose works with either hand. Turn on to give '
+                             'each hand its own gesture. Depends on seeing the palm, so it is '
+                             'unreliable with the hand held edge-on.')
+        self.hand.toggled.connect(self.store)
+        form.addRow(self.hand)
         self.tilt = QCheckBox('Only match at the tilt it was recorded at')
         self.tilt.setToolTip('Needed to tell apart poses that are the same shape rotated, '
                              'such as thumbs up and thumbs down.')
@@ -205,20 +215,21 @@ class GestureDialog(QDialog):
 
     def select(self, row):
         template = self.current()
-        for widget in (self.kind, self.argument, self.app_action, self.tilt,
+        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand,
                        self.rerecord, self.delete):
             widget.setEnabled(template is not None)
         if template is None:
             self.warning.clear()
             return
-        for widget in (self.kind, self.argument, self.app_action, self.tilt):
+        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand):
             widget.blockSignals(True)
         self.kind.setCurrentIndex(max(0, self.kind.findData(template.action or 'none')))
         self.argument.setText(template.argument if template.action != 'app' else '')
         if template.action == 'app':
             self.app_action.setCurrentIndex(max(0, self.app_action.findData(template.argument)))
         self.tilt.setChecked(template.orientation is not None)
-        for widget in (self.kind, self.argument, self.app_action, self.tilt):
+        self.hand.setChecked(template.chirality is not None)
+        for widget in (self.kind, self.argument, self.app_action, self.tilt, self.hand):
             widget.blockSignals(False)
         self.kind_changed()
 
@@ -243,6 +254,11 @@ class GestureDialog(QDialog):
                 template.orientation = getattr(template, 'recorded_orientation', 0.0)
         else:
             template.orientation = None
+        if self.hand.isChecked():
+            if template.chirality is None:
+                template.chirality = getattr(template, 'recorded_chirality', None) or 1
+        else:
+            template.chirality = None
         self.refresh_row()
 
     def refresh_row(self):
@@ -263,12 +279,16 @@ class GestureDialog(QDialog):
         template = dialog.template
         # Remember the recorded tilt so the checkbox can restore it later.
         template.recorded_orientation = template.orientation
+        template.recorded_chirality = template.chirality
         if existing is not None:
             template.action, template.argument = existing.action, existing.argument
             if existing.orientation is None:
                 template.orientation = None
+            if existing.chirality is None:
+                template.chirality = None
         else:
             template.orientation = None     # tilt-invariant unless asked for
+            template.chirality = None       # and works with either hand
         clash = self.library.conflict(template)
         notes = dialog.shadows(self.settings)
         self.library.replace(template)
@@ -309,6 +329,7 @@ class GestureDialog(QDialog):
         for template in self.library.templates:
             # Not persisted; only the dialog uses it.
             template.__dict__.pop('recorded_orientation', None)
+            template.__dict__.pop('recorded_chirality', None)
         try:
             self.library.save()
         except OSError as exc:

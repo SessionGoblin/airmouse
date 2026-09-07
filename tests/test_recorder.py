@@ -24,7 +24,7 @@ def hand(seed=1, jitter=0.0):
 
 
 def features_for(points, left=.8, right=.8, scroll=False):
-    pose, orientation = poses.normalize(points, 1.0)
+    pose, orientation, _ = poses.normalize(points, 1.0)
     return Features((.5, .5), left, right, scroll, pose, orientation)
 
 
@@ -144,7 +144,7 @@ def gesture_dialog(templates, tmp_path, monkeypatch):
 
 
 def make_template(name, seed=1, **kw):
-    pose, orientation = poses.normalize(hand(seed), 1.0)
+    pose, orientation, _ = poses.normalize(hand(seed), 1.0)
     return poses.Template(name=name, pose=pose, threshold=.2, **kw)
 
 

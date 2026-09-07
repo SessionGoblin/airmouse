@@ -30,6 +30,7 @@ class Features:
     # can still be exercised with a bare four-field Features.
     pose: tuple = None
     orientation: float = None
+    chirality: int = None
 
     @classmethod
     def from_landmarks(cls, points, aspect=4/3):
@@ -43,12 +44,12 @@ class Features:
         # are and how tightly the others are curled; the structural guards
         # (index+middle up, ring+little folded) still keep pointing and an open
         # palm from being read as a scroll.
-        pose, orientation = poses.normalize(points, aspect)
+        pose, orientation, chirality = poses.normalize(points, aspect)
         return cls(points[8][:2], distance(4, 8)/scale, distance(4, 12)/scale,
                    extended[8] and extended[12] and angles[8] > 150 and angles[12] > 150
                    and angles[16] < 145 and angles[20] < 145
                    and not extended[16] and not extended[20],
-                   pose, orientation)
+                   pose, orientation, chirality)
 
 class GestureMachine:
     def __init__(self, library=None):
@@ -114,7 +115,7 @@ class GestureMachine:
         # enough that shapes like a closed fist read as a click. The recorder
         # warns when a template shadows a built-in, so anything that got saved
         # was accepted knowing that.
-        template = self.library.match(f.pose, f.orientation) if (
+        template = self.library.match(f.pose, f.orientation, f.chirality) if (
             self.library is not None and settings.custom) else None
         if template is None:
             self.custom_latched = False

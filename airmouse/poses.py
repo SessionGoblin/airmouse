@@ -13,6 +13,7 @@ from pathlib import Path
 GESTURE_PATH = Path.home() / '.config' / 'airmouse' / 'gestures.json'
 
 WRIST, MIDDLE_MCP = 0, 9
+INDEX_MCP, PINKY_MCP = 5, 17
 LANDMARKS = 21
 
 # Recorded spread widens a template's accept radius, but it is only a floor
@@ -28,12 +29,49 @@ MIN_THRESHOLD = .18
 MAX_THRESHOLD = .35
 
 
+def winding(pose):
+    """Signed area of the palm triangle, in the upright frame.
+
+    Flips sign between a left and a right hand, which is what makes the two
+    distinguishable without trusting the model's handedness classifier. It also
+    flips when a hand turns palm-away, so this is "which way the palm winds",
+    not "which arm it is on".
+    """
+    ix, iy = pose[INDEX_MCP]
+    px, py = pose[PINKY_MCP]
+    return ix*py - iy*px
+
+
+# |winding| below this means the palm is near edge-on and the sign is not
+# trustworthy. Provisional: real hands measured palm-forward sit far above it,
+# but this wants checking against the winding readout in --debug.
+AMBIGUOUS = .15
+
+
+def mirrored(pose):
+    """Reflect a pose in the upright frame; the wrist and middle MCP stay put."""
+    return tuple((-x, y) for x, y in pose)
+
+
+def canonical(pose):
+    """Mirror a pose so both hands share one template space.
+
+    Without this the same shape made with the other hand lands ~.66 away -- as
+    far as a genuinely different gesture -- so a recorded pose simply does not
+    work on the other hand. Mirroring is applied to the upright frame, where the
+    wrist is the origin and the middle MCP is straight up, so both stay fixed.
+    """
+    return mirrored(pose) if winding(pose) > 0 else tuple(pose)
+
+
 def normalize(points, aspect=4/3):
-    """Landmarks -> (pose, orientation), or (None, None) for a degenerate hand.
+    """Landmarks -> (pose, orientation, chirality), or Nones for a bad hand.
 
     The wrist is the origin and the wrist -> middle-MCP span is the unit, the
     same span ``Features.from_landmarks`` divides pinch distances by, so poses
-    and pinch ratios share one unit system. The hand is then rotated upright.
+    and pinch ratios share one unit system. The hand is then rotated upright and
+    mirrored into one chirality, so a pose recorded with one hand matches the
+    other; the pre-mirror sign is returned so a template can still demand one.
 
     Rotation is normalized because a pose held at a natural 20-30 degree tilt
     otherwise lands nowhere near its own template, which would force recording
@@ -42,12 +80,12 @@ def normalize(points, aspect=4/3):
     same shape and differ only by this value.
     """
     if not points or len(points) < LANDMARKS:
-        return None, None
+        return None, None, None
     ox, oy = points[WRIST][0]*aspect, points[WRIST][1]
     mx, my = points[MIDDLE_MCP][0]*aspect - ox, points[MIDDLE_MCP][1] - oy
     scale = math.hypot(mx, my)
     if scale < 1e-6:
-        return None, None
+        return None, None, None
     orientation = math.atan2(my, mx)
     # Rotate the wrist -> middle-MCP vector onto -y, which is "up" in image
     # coordinates where y grows downward.
@@ -57,7 +95,12 @@ def normalize(points, aspect=4/3):
     for p in points[:LANDMARKS]:
         x, y = p[0]*aspect - ox, p[1] - oy
         pose.append(((x*cos - y*sin)/scale, (x*sin + y*cos)/scale))
-    return tuple(pose), orientation
+    pose = tuple(pose)
+    turn = winding(pose)
+    # None rather than a coin flip when the palm is edge-on: reporting a
+    # confident sign there is what makes a chirality-locked template flicker.
+    chirality = None if abs(turn) < AMBIGUOUS else (-1 if turn > 0 else 1)
+    return canonical(pose), orientation, chirality
 
 
 def distance(a, b):
@@ -80,12 +123,23 @@ class Template:
     # None matches at any tilt; a value requires the hand near that orientation.
     orientation: float = None
     tolerance: float = math.radians(50)
+    # None matches either hand; a value requires the palm to wind the same way
+    # it did when recorded.
+    chirality: int = None
 
-    def matches(self, pose, orientation):
+    def matches(self, pose, orientation, chirality=None):
         """Distance if this template accepts the pose, else None."""
         if not self.pose or pose is None:
             return None
         gap = distance(pose, self.pose)
+        if self.chirality is None:
+            # Near edge-on, canonicalization can mirror-flap frame to frame.
+            # A template that does not care which hand it is should not inherit
+            # that sensitivity, so accept whichever mirror fits better; the cost
+            # is one extra 21-point comparison.
+            gap = min(gap, distance(mirrored(pose), self.pose))
+        elif chirality is not None and chirality != self.chirality:
+            return None
         if gap > self.threshold:
             return None
         if self.orientation is not None and orientation is not None:
@@ -94,7 +148,7 @@ class Template:
         return gap
 
 
-def build(name, samples, orientations=None, **binding):
+def build(name, samples, orientations=None, chiralities=None, **binding):
     """Average recorded samples into a template and size its accept radius.
 
     The spread across the hold only widens the radius for a genuinely unsteady
@@ -114,19 +168,24 @@ def build(name, samples, orientations=None, **binding):
         y = sum(math.sin(a) for a in orientations)
         if math.hypot(x, y) > 1e-9:
             orientation = math.atan2(y, x)
-    return Template(name=name, pose=mean, threshold=threshold,
-                    orientation=orientation, **binding)
+    chirality = None
+    if chiralities:
+        # Majority vote: a frame or two of the palm rolling past edge-on should
+        # not decide which hand the template belongs to.
+        chirality = 1 if sum(1 for c in chiralities if c == 1)*2 >= len(chiralities) else -1
+    return Template(name=name, pose=canonical(mean), threshold=threshold,
+                    orientation=orientation, chirality=chirality, **binding)
 
 
 @dataclass
 class Library:
     templates: list = field(default_factory=list)
 
-    def match(self, pose, orientation):
+    def match(self, pose, orientation, chirality=None):
         """Closest accepting template, or None."""
         best = None
         for template in self.templates:
-            gap = template.matches(pose, orientation)
+            gap = template.matches(pose, orientation, chirality)
             if gap is not None and (best is None or gap < best[1]):
                 best = (template, gap)
         return best[0] if best else None
@@ -158,7 +217,8 @@ class Library:
         """
         if pose is None or not self.templates:
             return None, None
-        scored = [(t, distance(pose, t.pose)) for t in self.templates if t.pose]
+        scored = [(t, min(distance(pose, t.pose), distance(mirrored(pose), t.pose)))
+                  for t in self.templates if t.pose]
         return min(scored, key=lambda pair: pair[1]) if scored else (None, None)
 
     def replace(self, template):
@@ -183,6 +243,10 @@ class Library:
                 # Widen templates recorded under an older, far too tight floor;
                 # they would otherwise never match the pose they came from.
                 template.threshold = max(template.threshold, MIN_THRESHOLD)
+                # Templates recorded before chirality was normalized are stored
+                # in whichever mirror the recording hand happened to produce.
+                if len(template.pose) == LANDMARKS:
+                    template.pose = canonical(template.pose)
                 if len(template.pose) == LANDMARKS:
                     templates.append(template)
             except (TypeError, ValueError):
