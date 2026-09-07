@@ -5,10 +5,12 @@ from .mapping import CursorMapper
 
 class Controller:
     """Serialized control gate, including emergency release from keyboard thread."""
-    def __init__(self, settings, bounds, backend=None, screens=None):
+    def __init__(self, settings, bounds, backend=None, screens=None,
+                 library=None, dispatcher=None):
         self.settings, self.backend = settings, backend
         self.mapper = CursorMapper(bounds, screens)
-        self.machine = GestureMachine()
+        self.machine = GestureMachine(library)
+        self.dispatcher = dispatcher
         self.lock = threading.RLock()
         self.enabled = False
         self.last = None
@@ -76,6 +78,11 @@ class Controller:
                 self.mapper.filter.reset(self.mapper.visible_point(origin))
             actions = self.machine.step(features, now, self.settings, self.enabled)
             for action in actions:
+                # Ahead of the backend guard: a keystroke or shell binding does
+                # not need a pointer device to be useful.
+                if action[0] == 'custom':
+                    self.custom(action[1])
+                    continue
                 if not self.backend: continue
                 if action[0] == 'move':
                     previous = self.mapper.filter.value
@@ -120,6 +127,21 @@ class Controller:
                 elif action[0] == 'scroll': self.backend.scroll(action[1])
                 else: getattr(self.backend, action[0])()
             return self.machine.state.value
+
+    def custom(self, template):
+        """Run a matched template's binding.
+
+        'recenter' is handled here rather than in the dispatcher because it is
+        pointer state: clearing the filter sends the cursor back through the
+        same slow reacquisition path used when a hand first appears, instead of
+        teleporting it.
+        """
+        if template.action == 'app' and template.argument == 'recenter':
+            self.mapper.filter.reset()
+            self.target = None
+            return
+        if self.dispatcher:
+            self.dispatcher.run(template)
 
     def close(self):
         with self.lock:

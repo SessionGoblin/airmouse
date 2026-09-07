@@ -65,7 +65,9 @@ def test_resolution_persists_and_reports_camera_fallback(monkeypatch, tmp_path):
             assert (controller.settings.camera_width, controller.settings.camera_height) == (1280, 720)
 
         def take(self):
-            return np.zeros((480, 640, 3), dtype=np.uint8), None, None, None, 'paused', 30
+            # The reported resolution is the capture size, which is now carried
+            # alongside the (possibly downscaled) working frame.
+            return np.zeros((480, 640, 3), dtype=np.uint8), None, None, None, 'paused', 30, (640, 480)
 
         def close(self):
             return True

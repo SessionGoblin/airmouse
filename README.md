@@ -21,7 +21,7 @@ The repository already has a working `.venv` on the development host. Launch dir
 
 ## First use and calibration
 
-1. Select a webcam and **Resolution**, then **Start preview**. Resolution defaults to 640 × 480 and is saved automatically. Stop preview before changing it. The status line shows the actual frame size and, if different, the requested size; available presets are requests, not a list of modes guaranteed by your camera. Higher resolutions may lower processing FPS. Some Linux video nodes carry metadata instead of images; choose another camera index if opening fails.
+1. Select a webcam and **Resolution**, then **Start preview**. Resolution defaults to 640 × 480 and is saved automatically. Stop preview before changing it. The status line shows the actual frame size and, if different, the requested size; available presets are requests, not a list of modes guaranteed by your camera. Capture requests MJPG so higher resolutions still negotiate 30 FPS where the camera supports it; **Hold frame rate in low light** (on by default) asks the webcam not to drop below that for brightness, and restores the previous control when preview stops. Frames above 1280 px wide are scaled down before tracking, since the extra pixels do not improve landmark accuracy. Some Linux video nodes carry metadata instead of images; choose another camera index if opening fails.
 2. Open **Calibrate active region & gestures**. The symmetric inner region defaults to an 18% margin, allowing screen edges to be reached without leaving the camera image. Increase the margin if your comfortable range is smaller. Apply settings to update the preview region.
 3. Adjust sensitivity (1–2), smoothing time, dead zone, pinch/release ratios, confirmation delay, and cooldown. Ratios are relative to wrist-to-middle-knuckle palm length and account for frame aspect ratio. Release must exceed pinch to provide hysteresis.
 4. Toggle any gestures you do not want. Changing settings pauses control. Calibration blocks F8 resumption until closed and leaves control paused afterward.
@@ -42,11 +42,20 @@ Holding a right pinch freezes the cursor until release. Scrolling now requires s
 | Drag | Hold the same pinch while moving; release to drop |
 | Right click | Thumb-middle pinch; open before another right click |
 | Scroll | Index and middle extended, ring and little fingers folded; hold 350 ms, then move vertically |
+| Custom pose | Any recorded hand shape, held 450 ms; see below |
 | Pause / resume | Global **F8** |
 | Emergency stop | Global **F12**; always pauses and releases the left button |
 | Local stop | **Escape** when the app is focused, or the red stop button |
 
 Pinches require continuous confirmation (80 ms default). Pointer motion freezes while a gesture is being confirmed. Right click is latched until the hand opens; clicks have a 350 ms cooldown. Scrolling locks pointer movement. Loss of tracking immediately releases a drag, discards gesture state, and requires neutral reacquisition. Stalled vision (>300 ms) pauses control via the UI watchdog. Camera stop, settings changes, hotkey listener failure, and application exit also release the button. F12 releases from the keyboard listener thread independently of inference; it does not rely on receiving another camera frame.
+
+### Custom poses
+
+**Custom gestures** records a hand shape and binds it to a keyboard shortcut, an AirMouse command (pause, pause/resume, recentre pointer), or a shell command. Hold the pose for three seconds of countdown plus about a second of sampling; frames captured while the hand is still moving are discarded, and a pose that never settles is refused rather than saved as a template that would match nothing.
+
+A pose is stored relative to the wrist, scaled by the wrist-to-knuckle span, rotated upright and mirrored into a single chirality, so it matches wherever your hand is in frame, however far from the camera, at any tilt, and **with either hand**. Two checkboxes narrow that when you want the distinction: **Only match at the tilt it was recorded at** separates poses that are the same shape rotated, such as thumbs up and thumbs down, and **Only match with the hand it was recorded with** gives each hand its own gesture. The hand check reads the winding of the palm triangle, so it needs to see your palm; held edge-on the winding collapses and the hand becomes unknown, at which point a hand-locked pose stops matching while an either-hand pose keeps working.
+
+Templates are matched before the built-in pinches, so a pose that also reads as a pinch will shadow clicking while it is held; the recorder warns when it detects this, and when a new pose is too close to an existing one to ever win a match. Custom poses fire once per hold, are confirmed over 450 ms (longer than a pinch, because a binding can run a command), and share the standard action cooldown. Shell commands are run without a shell, so they cannot expand globs or chain operators. **F8** and **F12** cannot be bound; the app's own hotkey listener would read them back. Templates are stored in `~/.config/airmouse/gestures.json`.
 
 Releasing a held drag on tracking loss can drop the item at its current location. Resume is always explicit after emergency stop. A global keyboard listener is required before control can be enabled.
 
@@ -90,7 +99,7 @@ Troubleshooting:
 - **Preview only:** read the input status message and Linux permission instructions above.
 - **Qt platform plugin error:** install the display runtime packages listed above; `QT_QPA_PLATFORM=wayland` can select native Wayland. `QT_QPA_PLATFORM=offscreen` is only for tests.
 - **Python.h / compiler missing:** install the matching Python development package and build tools before pip installation. Bundled Python builds may need `CC=gcc LDSHARED='gcc -shared'`.
-- **Low FPS:** close other camera users, use good lighting, and keep the hand visible. Capture uses a single latest-frame slot at your selected resolution (640×480 by default) and a requested 30 FPS, preventing a queue of old frames. Try a lower resolution if processing is slow.
+- **Low FPS:** close other camera users and keep the hand visible. Capture requests MJPG at 30 FPS. If the picture is 15 FPS and dim, leave **Hold frame rate in low light** on (the preview may look darker). Turn it off if you would rather keep auto-exposure’s brighter, slower shutter. Cameras without MJPG may still be stuck at 5–10 FPS uncompressed YUYV at 720p/1080p; try 640×480 then.
 - **Clicks too easy:** decrease pinch ratio, increase confirmation time, or disable the gesture.
 - **Scrolling accidentally:** increase neutral/scroll dwell or disable scrolling.
 

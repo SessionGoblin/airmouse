@@ -1,4 +1,5 @@
 import argparse
+import math
 import sys
 import time
 from dataclasses import replace
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from .config import Settings
 from .controller import Controller
 from .calibration import CalibrationDialog
-from . import perf
+from . import actions, perf, poses
 
 EDGES = [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),
          (10,11),(11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(0,17),(17,18),(18,19),(19,20)]
@@ -28,8 +29,15 @@ class Window(QMainWindow):
         self.settings = Settings.load()
         rect = QApplication.primaryScreen().virtualGeometry()
         screens = [screen.geometry() for screen in QApplication.primaryScreen().virtualSiblings()]
+        self.library = poses.Library.load()
+        # App bindings hop to the GUI thread through the existing hotkey signal,
+        # which already exists for exactly this: the dispatcher runs on the
+        # vision thread and must not touch widgets.
+        self.dispatcher = actions.Dispatcher(app=self.receive_app_action)
         self.controller = Controller(self.settings, (rect.x(), rect.y(), rect.width(), rect.height()),
-                                     screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens])
+                                     screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens],
+                                     library=self.library, dispatcher=self.dispatcher)
+        self.last_features = (None, None)
         self.worker = self.keys = None
         self.calibrating = False
         self.previous_state = ''
@@ -71,6 +79,13 @@ class Window(QMainWindow):
             if size == selected: self.resolution.setCurrentIndex(self.resolution.count()-1)
         self.resolution.setToolTip('Requested capture size. Stop preview to change it; the camera may use a different size.')
         form.addRow('Resolution', self.resolution)
+        self.hold_fps = QCheckBox('Hold frame rate in low light')
+        self.hold_fps.setChecked(self.settings.hold_fps)
+        self.hold_fps.setToolTip(
+            'When on, webcams that drop to 15 FPS for brightness are asked to stay at 30 FPS. '
+            'The preview may look darker. Stop preview to change this.')
+        self.hold_fps.toggled.connect(lambda value: self.setting('hold_fps', value))
+        form.addRow(self.hold_fps)
         self.start_button = QPushButton('Start preview')
         self.start_button.clicked.connect(self.start_stop)
         form.addRow(self.start_button)
@@ -104,6 +119,9 @@ class Window(QMainWindow):
         calibration = QPushButton('Calibrate active region & gestures…')
         calibration.clicked.connect(self.calibrate)
         form.addRow(calibration)
+        custom = QPushButton('Custom gestures…')
+        custom.clicked.connect(self.edit_gestures)
+        form.addRow(custom)
         self.show_preview = QCheckBox('Show preview')
         self.show_preview.setChecked(True)
         self.show_preview.setToolTip('Turn off to stop all preview rendering; hand tracking and control keep running.')
@@ -199,6 +217,14 @@ class Window(QMainWindow):
         if action == 'stop': self.controller.pause()
         self.hotkey.emit(action)
 
+    def receive_app_action(self, action):
+        """Called from the vision thread when a pose is bound to app control."""
+        if action == 'pause':
+            self.controller.pause()
+            self.hotkey.emit('stop')
+        elif action == 'toggle':
+            self.hotkey.emit('toggle')
+
     def on_hotkey_error(self, error):
         self.pause()
         self.input_error = error
@@ -221,6 +247,7 @@ class Window(QMainWindow):
         self.start_button.setText('Stop camera')
         self.camera.setEnabled(False)
         self.resolution.setEnabled(False)
+        self.hold_fps.setEnabled(False)
         self.status.setText('PAUSED • starting camera and model…')
 
     def stop(self):
@@ -232,6 +259,7 @@ class Window(QMainWindow):
         self.start_button.setText('Start preview')
         self.camera.setEnabled(True)
         self.resolution.setEnabled(True)
+        self.hold_fps.setEnabled(True)
         self.resume_button.setEnabled(False)
         self.status.setText('PAUSED • camera stopped')
 
@@ -246,6 +274,21 @@ class Window(QMainWindow):
         elif (not self.calibrating and self.worker and not self.worker.error and self.keys
               and self.keys.healthy() and time.monotonic()-self.worker.last_frame < .3):
             if self.controller.resume(): self.resume_button.setText('Pause control')
+
+    def edit_gestures(self):
+        self.pause()
+        self.calibrating = True
+        try:
+            from .recorder import GestureDialog
+            dialog = GestureDialog(self.library, self.settings, lambda: self.last_features, self)
+            if dialog.exec():
+                self.library = dialog.library
+                # The machine holds the library directly, and reset() re-runs
+                # __init__ with it, so swapping the reference is enough.
+                self.controller.machine.library = self.library
+        finally:
+            self.calibrating = False
+            self.pause()
 
     def calibrate(self):
         self.pause()
@@ -311,7 +354,8 @@ class Window(QMainWindow):
         if age > .3 and self.controller.enabled: self.pause()
         item = self.worker.take()
         if not item: return
-        frame, points, confidence, features, state, fps = item
+        frame, points, confidence, features, state, fps, captured = item
+        self.last_features = (features, time.monotonic())
         h,w = frame.shape[:2]
         if self.show_preview.isChecked() and time.monotonic()-self.last_preview >= self.preview_interval:
             self.last_preview = time.monotonic()
@@ -321,8 +365,8 @@ class Window(QMainWindow):
         self.resume_button.setText('Pause control' if enabled else 'Enable control')
         tracking = f'{confidence[0]} hand • handedness {confidence[1]:.0%}' if confidence else 'No hand • waiting'
         requested = (self.settings.camera_width, self.settings.camera_height)
-        resolution = f'{w} × {h}'
-        if (w, h) != requested:
+        resolution = f'{captured[0]} × {captured[1]}'
+        if captured != requested:
             resolution += f' (requested {requested[0]} × {requested[1]})'
         self.status.setText(f'{"ACTIVE" if enabled else "PAUSED"} • {state} • {tracking} • {resolution} • {fps:.0f} FPS')
         if state != self.previous_state:
@@ -335,8 +379,44 @@ class Window(QMainWindow):
                 text += f'Pinch / palm: index {features.left:.3f}, middle {features.right:.3f}; scroll pose {features.scroll}\n'
                 from .gestures import joint_angle
                 text += f'Index PIP angle {joint_angle(points, 5, 6, 8):.1f}°; middle PIP angle {joint_angle(points, 9, 10, 12):.1f}°\n'
+                text += self.pose_diagnostics(features)
                 text += ' '.join(f'{i}:({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})' for i,p in enumerate(points))+'\n'
             self.diagnostics.setPlainText(text+'\n'.join(self.transitions))
+
+    def pose_diagnostics(self, features):
+        """Why a custom pose did or did not fire, in the units it is judged in.
+
+        Reports the nearest template with its distance and accept radius, since
+        a pose that never fires looks identical to one that is not recognized at
+        all. Arming is included because no gesture of any kind is considered
+        until a neutral open hand has been held for the arming dwell.
+        """
+        if not self.library.templates:
+            return 'Custom poses: none recorded\n'
+        if not self.settings.custom:
+            return 'Custom poses: disabled in settings\n'
+        template, gap = self.library.nearest(features.pose)
+        if template is None:
+            return 'Custom poses: no pose from this frame\n'
+        verdict = 'MATCH' if gap <= template.threshold else 'too far'
+        if (gap <= template.threshold and template.orientation is not None
+                and features.orientation is not None):
+            from . import poses as _poses
+            off = abs(_poses.angle_delta(features.orientation, template.orientation))
+            if off > template.tolerance:
+                verdict = f'shape ok, tilt off by {math.degrees(off):.0f}°'
+        if (gap <= template.threshold and template.chirality is not None
+                and features.chirality is not None
+                and features.chirality != template.chirality):
+            verdict = 'shape ok, wrong hand'
+        armed = 'armed' if self.controller.machine.armed else 'NOT armed (hold an open hand)'
+        from . import poses as _poses
+        turn = _poses.winding(features.pose)
+        hand = ('either' if template.chirality is None else
+                f'locked, this hand {features.chirality}')
+        return (f'Nearest pose "{template.name}" {gap:.3f} / {template.threshold:.3f} '
+                f'-> {verdict} • {armed}\n'
+                f'Palm winding {turn:+.2f} (ambiguous under {_poses.AMBIGUOUS}) • hand {hand}\n')
 
     def closeEvent(self, event):
         self.stop()
@@ -344,6 +424,7 @@ class Window(QMainWindow):
             event.ignore()
             return
         if self.keys: self.keys.close()
+        self.dispatcher.close()
         self.controller.close()
         event.accept()
 

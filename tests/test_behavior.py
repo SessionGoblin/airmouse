@@ -211,3 +211,27 @@ def test_scroll_pose_detected_from_landmarks():
 
 def test_open_palm_is_not_a_scroll_pose():
     assert not Features.from_landmarks(scroll_pose_points(fold=False), 1.).scroll
+
+
+def test_camera_take_blocks_until_a_frame_lands():
+    """The worker sleeps on the capture thread rather than polling, so a frame
+    is picked up as soon as it exists instead of up to a poll interval later."""
+    import threading, time
+    from airmouse.capture import Camera
+    camera = Camera.__new__(Camera)          # no webcam needed for the handoff
+    camera.lock = threading.Condition()
+    camera.latest = None
+    assert camera.take(0.02) is None         # nothing published yet
+
+    def publish():
+        time.sleep(0.03)
+        with camera.lock:
+            camera.latest = (1.0, 'frame')
+            camera.lock.notify()
+    threading.Thread(target=publish, daemon=True).start()
+    start = time.monotonic()
+    item = camera.take(2.0)
+    waited = time.monotonic() - start
+    assert item == (1.0, 'frame')
+    assert waited < 0.5                      # woken by the notify, not the timeout
+    assert camera.take(0) is None            # slot cleared after the take
