@@ -311,7 +311,7 @@ class Window(QMainWindow):
         if age > .3 and self.controller.enabled: self.pause()
         item = self.worker.take()
         if not item: return
-        frame, points, confidence, features, state, fps = item
+        frame, points, confidence, features, state, fps, captured = item
         h,w = frame.shape[:2]
         if self.show_preview.isChecked() and time.monotonic()-self.last_preview >= self.preview_interval:
             self.last_preview = time.monotonic()
@@ -321,8 +321,8 @@ class Window(QMainWindow):
         self.resume_button.setText('Pause control' if enabled else 'Enable control')
         tracking = f'{confidence[0]} hand • handedness {confidence[1]:.0%}' if confidence else 'No hand • waiting'
         requested = (self.settings.camera_width, self.settings.camera_height)
-        resolution = f'{w} × {h}'
-        if (w, h) != requested:
+        resolution = f'{captured[0]} × {captured[1]}'
+        if captured != requested:
             resolution += f' (requested {requested[0]} × {requested[1]})'
         self.status.setText(f'{"ACTIVE" if enabled else "PAUSED"} • {state} • {tracking} • {resolution} • {fps:.0f} FPS')
         if state != self.previous_state:

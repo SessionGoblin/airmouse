@@ -12,6 +12,14 @@ from . import perf
 # fresher frame instead of compounding the lag.
 STALE = .3
 
+# Landmark inference internally works from a small square crop, so pixels beyond
+# this width buy no accuracy and cost real time: at 3840x2160 a full-frame detect
+# runs ~16 ms against ~12 ms for the same frame scaled to this cap. Downscaling
+# first also shrinks the mirror, and hands the UI a frame small enough that the
+# preview no longer resizes a 4K image on the main thread. Captures at or below
+# the cap are untouched, so the common 640x480 path is unchanged.
+WORK_WIDTH = 1280
+
 
 def analyze(stamp, frame, tracker, now):
     """Mirror the selected frame and, unless it is already stale, run landmark
@@ -19,7 +27,12 @@ def analyze(stamp, frame, tracker, now):
     inference_seconds). Kept module-level and side-effect free so the freshness
     gate is testable without a camera or the model."""
     # Mirror only the frame actually selected for use, never in the capture
-    # thread where most frames are dropped before they are read.
+    # thread where most frames are dropped before they are read. Scale down
+    # first when oversized, so the mirror runs on the smaller image too.
+    height, width = frame.shape[:2]
+    if width > WORK_WIDTH:
+        frame = cv2.resize(frame, (WORK_WIDTH, max(1, round(height*WORK_WIDTH/width))),
+                           interpolation=cv2.INTER_AREA)
     frame = cv2.flip(frame, 1)
     start_age = now - stamp
     if start_age > STALE:
@@ -51,11 +64,11 @@ class VisionWorker:
             previous = time.monotonic()
             while not self.stop_event.is_set():
                 if camera.error: raise RuntimeError(camera.error)
-                item = camera.take()
+                item = camera.take(.05)
                 if item is None:
-                    self.stop_event.wait(.005)
                     continue
                 stamp, frame = item
+                captured = (frame.shape[1], frame.shape[0])
                 frame, points, confidence, features, start_age, inference = analyze(
                     stamp, frame, tracker, time.monotonic())
                 now = time.monotonic()
@@ -65,7 +78,7 @@ class VisionWorker:
                 previous = now
                 self.last_frame = now
                 with self.lock:
-                    self.latest = (frame, points, confidence, features, state, fps)
+                    self.latest = (frame, points, confidence, features, state, fps, captured)
                 if perf.PROFILER.enabled:
                     perf.PROFILER.record('infer_start_age', start_age*1000)
                     if inference: perf.PROFILER.record('inference', inference*1000)
