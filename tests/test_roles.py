@@ -139,3 +139,42 @@ def test_reset_clears_remembered_positions():
     a.assign([hand(.2), hand(.8)], 0.0)
     a.reset()
     assert roles(a.assign([hand(.8), hand(.2)], .05)) == [POINTER, MODIFIER]
+
+
+# --- fixed sides ---------------------------------------------------------------
+
+def test_fixed_sides_never_drift():
+    """Sticky assignment can settle the wrong way round and stay there. A
+    pinned side is recomputed every frame, so it cannot."""
+    a = RoleAssigner(pointer_side='right')
+    now = 0.0
+    for left, right in [(.2, .8), (.3, .7), (.45, .55), (.2, .9), (.4, .6)]:
+        now += .033
+        assert roles(a.assign([hand(left), hand(right)], now)) == [MODIFIER, POINTER]
+
+
+def test_fixed_sides_swap_when_the_hands_actually_swap():
+    """Predictable rather than sticky: crossing your hands trades the roles,
+    and crossing back puts them right."""
+    a = RoleAssigner(pointer_side='right')
+    assert roles(a.assign([hand(.2), hand(.8)], 0.0)) == [MODIFIER, POINTER]
+    assert roles(a.assign([hand(.8), hand(.2)], .1)) == [POINTER, MODIFIER]
+    assert roles(a.assign([hand(.2), hand(.8)], .2)) == [MODIFIER, POINTER]
+
+
+def test_inverting_the_side_swaps_which_hand_points():
+    a = RoleAssigner(pointer_side='left')
+    assert roles(a.assign([hand(.2), hand(.8)], 0.0)) == [POINTER, MODIFIER]
+
+
+def test_a_lone_hand_still_points_in_fixed_mode():
+    """Even on the wrong side: leaving it as the modifier would mean nothing
+    drives the cursor."""
+    a = RoleAssigner(pointer_side='right')
+    assert roles(a.assign([hand(.1)], 0.0)) == [POINTER]
+
+
+def test_fixed_mode_keeps_no_memory_to_drift():
+    a = RoleAssigner(pointer_side='right')
+    a.assign([hand(.2), hand(.8)], 0.0)
+    assert a.position[POINTER] is None and a.position[MODIFIER] is None

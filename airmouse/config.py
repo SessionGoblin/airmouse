@@ -46,7 +46,7 @@ class Settings:
                 raise ValueError(f'Invalid {key}')
         if self.release <= self.pinch:
             raise ValueError('Release threshold must exceed pinch threshold')
-        if self.pointer_side not in ('left', 'right'):
+        if self.pointer_side not in ('left', 'right', 'auto'):
             raise ValueError('Invalid pointer_side')
         for key in ('left', 'right', 'scroll', 'hold_fps', 'custom', 'two_hands', 'strokes'):
             if type(getattr(self, key)) is not bool:

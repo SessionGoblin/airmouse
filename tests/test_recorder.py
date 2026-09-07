@@ -228,14 +228,6 @@ def test_record_buttons_survive_the_clicked_signal(tmp_path, monkeypatch):
     real button catches this; calling record() directly does not."""
     seen = []
 
-    class StubRecord:
-        def __init__(self, source, name, parent=None, role='pointer'):
-            self.template = None
-
-        def exec(self):
-            return 0
-
-    monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
     d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
     monkeypatch.setattr(d, 'record', lambda existing=None: seen.append(existing))
     # Reconnect through the same lambdas the dialog builds.
@@ -247,14 +239,16 @@ def test_record_buttons_survive_the_clicked_signal(tmp_path, monkeypatch):
 
 
 def test_record_button_creates_a_uniquely_named_template(tmp_path, monkeypatch):
+    """Capture is non-modal now, so the result arrives through `finished`
+    rather than from exec(); drive that path directly."""
     built = make_template('Gesture 1', seed=4)
 
-    class StubRecord:
+    class StubRecord(recorder.RecordDialog):
         def __init__(self, source, name, parent=None, role='pointer'):
-            self.template = poses.Template(name=name, pose=built.pose, threshold=.2, role=role)
-
-        def exec(self):
-            return 1
+            super().__init__(source, name, parent, role=role)
+            self.timer.stop()
+            self.template = poses.Template(name=name, pose=built.pose,
+                                           threshold=.2, role=role)
 
         def shadows(self, settings):
             return []
@@ -262,6 +256,27 @@ def test_record_button_creates_a_uniquely_named_template(tmp_path, monkeypatch):
     monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
     d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
     d.record_button.click()
+    d.capture.accept()                  # the user finishes the recording
     assert [t.name for t in d.library.templates] == ['a', 'Gesture 1']
+    assert d.capture is None and d.isEnabled()
     d.record_button.click()
+    d.capture.accept()
     assert [t.name for t in d.library.templates] == ['a', 'Gesture 1', 'Gesture 2']
+
+
+def test_the_list_is_disabled_while_a_recording_is_in_flight(tmp_path, monkeypatch):
+    """Non-modal capture must still stop the list being edited underneath it."""
+    class StubRecord(recorder.RecordDialog):
+        def __init__(self, source, name, parent=None, role='pointer'):
+            super().__init__(source, name, parent, role=role)
+            self.timer.stop()
+
+    monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
+    d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
+    d.record_button.click()
+    assert d.capture is not None and not d.isEnabled()
+    d.record_button.click()             # a second press must not stack dialogs
+    assert d.capture is not None
+    d.capture.reject()                  # cancelled
+    assert d.capture is None and d.isEnabled()
+    assert [t.name for t in d.library.templates] == ['a']

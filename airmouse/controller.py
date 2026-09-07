@@ -27,6 +27,7 @@ class Controller:
         # happens on the frame the gate opens, by which point the gate pose is
         # already released and self.mode has cleared.
         self.stroke_mode = None
+        self.gate_open = False
         self.lock = threading.RLock()
         self.enabled = False
         self.last = None
@@ -55,6 +56,7 @@ class Controller:
                 self.mode = None
                 self.mode_latch.reset()
                 self.stroke_mode = None
+                self.gate_open = False
 
     def resume(self):
         with self.lock:
@@ -191,11 +193,18 @@ class Controller:
         pose, which is what lets strokes be scoped per gate.
         """
         if modifier is None:
+            self.gate_open = False
             return False
         gates = self.machine.library.gates() if self.machine.library is not None else set()
         if gates:
-            return self.mode in gates
-        return modifier.left < self.settings.pinch
+            self.gate_open = self.mode in gates
+        else:
+            # Hysteresis, the same shape the click gesture uses. A bare
+            # threshold lets pinch noise flicker the gate and chop one stroke
+            # into several too-short ones.
+            limit = self.settings.release if self.gate_open else self.settings.pinch
+            self.gate_open = modifier.left < limit
+        return self.gate_open
 
     def recognize(self, path, mode=None):
         """Score a finished stroke and run whatever it is bound to."""

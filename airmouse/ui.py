@@ -40,6 +40,7 @@ class Window(QMainWindow):
                                      library=self.library, dispatcher=self.dispatcher,
                                      stroke_library=self.stroke_library)
         self.last_hands = ([], None)
+        self.dialog = None
         self.worker = self.keys = None
         self.calibrating = False
         self.previous_state = ''
@@ -121,11 +122,14 @@ class Window(QMainWindow):
         self.two_hands.toggled.connect(lambda value: self.setting('two_hands', value))
         form.addRow(self.two_hands)
         self.pointer_side = QComboBox()
-        for key, label in [('right', 'Right hand points'), ('left', 'Left hand points')]:
+        for key, label in [('right', 'Right hand points'), ('left', 'Left hand points'),
+                           ('auto', 'Automatic')]:
             self.pointer_side.addItem(label, key)
         self.pointer_side.setCurrentIndex(self.pointer_side.findData(self.settings.pointer_side))
-        self.pointer_side.setToolTip('Which side of the mirrored preview takes the cursor when '
-                                     'both hands first appear.')
+        self.pointer_side.setToolTip('Right or Left pins the pointer to that side of the '
+                                     'mirrored preview and never drifts; crossing your hands '
+                                     'swaps them. Automatic follows each hand through a '
+                                     'crossing, but can settle the wrong way round.')
         self.pointer_side.currentIndexChanged.connect(
             lambda: self.setting('pointer_side', self.pointer_side.currentData()))
         form.addRow('Pointer', self.pointer_side)
@@ -273,7 +277,14 @@ class Window(QMainWindow):
         self.two_hands.setEnabled(False)
         self.status.setText('PAUSED • starting camera and model…')
 
+    def close_dialog(self):
+        if self.dialog is not None:
+            self.dialog.reject()
+            self.dialog = None
+            self.calibrating = False
+
     def stop(self):
+        self.close_dialog()
         self.pause()
         if self.worker and not self.worker.close():
             self.platform_status.setText('Camera is still shutting down; control remains disabled.')
@@ -299,51 +310,65 @@ class Window(QMainWindow):
               and self.keys.healthy() and time.monotonic()-self.worker.last_frame < .3):
             if self.controller.resume(): self.resume_button.setText('Pause control')
 
-    def edit_gestures(self):
+    def open_dialog(self, dialog, applied):
+        """Show a gesture dialog without blocking the main window.
+
+        These dialogs ask you to hold a pose or draw a shape, which needs the
+        live preview they would otherwise cover. Modal dialogs kept the timer
+        running but hid the one thing you need to see, so they are shown
+        non-modally and control stays paused for as long as one is open.
+        """
+        if self.dialog is not None:
+            self.dialog.raise_()
+            self.dialog.activateWindow()
+            return
         self.pause()
         self.calibrating = True
-        try:
-            from .recorder import GestureDialog
-            dialog = GestureDialog(self.library, self.settings, lambda: self.last_hands, self)
-            if dialog.exec():
-                self.library = dialog.library
-                # The machine holds the library directly, and reset() re-runs
-                # __init__ with it, so swapping the reference is enough.
-                self.controller.machine.library = self.library
-        finally:
+        self.dialog = dialog
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, False)
+
+        def finished(result):
+            self.dialog = None
             self.calibrating = False
+            if result:
+                applied(dialog)
             self.pause()
+        dialog.finished.connect(finished)
+        dialog.show()
+        dialog.raise_()
+
+    def edit_gestures(self):
+        from .recorder import GestureDialog
+
+        def applied(dialog):
+            self.library = dialog.library
+            # The machine holds the library directly, and reset() re-runs
+            # __init__ with it, so swapping the reference is enough.
+            self.controller.machine.library = self.library
+        self.open_dialog(GestureDialog(self.library, self.settings,
+                                       lambda: self.last_hands, self), applied)
 
     def edit_strokes(self):
-        self.pause()
-        self.calibrating = True
-        try:
-            from .recorder import StrokeDialog
-            dialog = StrokeDialog(self.stroke_library, lambda: self.last_hands, self,
-                                  gates=sorted(self.library.gates()),
-                                  pose_library=self.library)
-            if dialog.exec():
-                self.stroke_library = dialog.library
-                self.controller.stroke_library = self.stroke_library
-        finally:
-            self.calibrating = False
-            self.pause()
+        from .recorder import StrokeDialog
+
+        def applied(dialog):
+            self.stroke_library = dialog.library
+            self.controller.stroke_library = self.stroke_library
+        self.open_dialog(StrokeDialog(self.stroke_library, lambda: self.last_hands, self,
+                                      gates=sorted(self.library.gates()),
+                                      pose_library=self.library,
+                                      settings=self.settings), applied)
 
     def calibrate(self):
-        self.pause()
-        self.calibrating = True
-        try:
-            dialog = CalibrationDialog(self.settings,self)
-            if dialog.exec():
-                self.settings = dialog.settings
-                self.controller.settings = self.settings
-                for key, box in self.adjusters.items():
-                    box.blockSignals(True)
-                    box.setValue(getattr(self.settings,key))
-                    box.blockSignals(False)
-        finally:
-            self.calibrating = False
-            self.pause()
+        def applied(dialog):
+            self.settings = dialog.settings
+            self.controller.settings = self.settings
+            for key, box in self.adjusters.items():
+                box.blockSignals(True)
+                box.setValue(getattr(self.settings,key))
+                box.blockSignals(False)
+        self.open_dialog(CalibrationDialog(self.settings, self), applied)
 
     def on_preview_toggle(self, on):
         if not on:
@@ -482,6 +507,7 @@ class Window(QMainWindow):
                 f'Modifier mode: {mode or "none"}\n')
 
     def closeEvent(self, event):
+        self.close_dialog()
         self.stop()
         if self.worker:
             event.ignore()

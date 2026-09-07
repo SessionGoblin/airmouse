@@ -53,7 +53,9 @@ Pinches require continuous confirmation (80 ms default). Pointer motion freezes 
 
 **Track a second hand** adds a modifier hand alongside the pointer. Roles are shown in the preview — the pointer hand is drawn in amber with a crosshair on its index fingertip, the modifier in violet — so a role changing hands is visible directly rather than only as the cursor jumping.
 
-Roles are assigned by position and motion, never by the model's handedness label: that classifier flickers exactly when two hands are close or overlapping, which is when a swap would be most damaging. Each hand is matched to where its role is predicted to be, so hands reaching across each other keep their roles through the crossing; two hands crossing at mirrored speeds are momentarily coincident and genuinely ambiguous. A role keeps its slot for 0.4 s after its hand leaves, so a brief dropout does not reshuffle. A lone hand always takes the pointer. **Pointer** selects which side seeds the cursor when both hands first appear — position in the mirrored preview, so your right hand is on the right whatever the label says.
+**Pointer** chooses how roles are decided. **Right** or **Left** pins the pointer to that side of the mirrored preview and recomputes it every frame, so roles never drift — crossing your hands swaps them, predictably, and crossing back puts them right. Invert it to swap which hand points. **Automatic** follows each hand through a crossing instead, which is better when you cross often but can settle the wrong way round and stay there. Right is the default.
+
+Under Automatic, roles are assigned by position and motion, never by the model's handedness label: that classifier flickers exactly when two hands are close or overlapping, which is when a swap would be most damaging. Each hand is matched to where its role is predicted to be, so hands reaching across each other keep their roles through the crossing; two hands crossing at mirrored speeds are momentarily coincident and genuinely ambiguous. A role keeps its slot for 0.4 s after its hand leaves, so a brief dropout does not reshuffle. A lone hand always takes the pointer. **Pointer** selects which side seeds the cursor when both hands first appear — position in the mirrored preview, so your right hand is on the right whatever the label says.
 
 The modifier hand gates drawn gestures and carries its own poses (below). Costs frame rate: with two hands enabled the model keeps hunting for a second hand whenever only one is visible, so watch the FPS in the status line and turn it off if it hurts.
 
@@ -62,6 +64,8 @@ The modifier hand gates drawn gestures and carries its own poses (below). Costs 
 A recorded pose can be read from either hand. Choose **Modifier hand** in the gesture list before recording, and the pose is matched against your off hand instead of the pointer.
 
 A held modifier pose is also a **mode**, and that is what makes it a modifier rather than a second pose slot. Pointer poses and drawn strokes can be scoped with **Only while** / **Only under**, so three modifier poses multiply the gestures you already have instead of adding three more to remember. Unscoped gestures keep working in every mode — holding a modifier never switches off your ordinary gestures — and a scoped gesture outranks an unscoped one of the same shape, since the more specific binding is the one you raised the modifier for.
+
+The gate uses the same pinch/release hysteresis as clicking, so pinch noise cannot chop one stroke into several too-short ones.
 
 Mark a modifier pose **Holding this opens stroke drawing** to replace the built-in modifier pinch. Strokes can then be scoped per gate, so the same shape drawn under two different modifier poses means two different things. A gate pose does not also run its own binding; it is a mode, not an event.
 
@@ -78,6 +82,8 @@ The modifier pinch is what makes this workable. Because the pointer *is* your ha
 Matching uses the $1 unistroke recognizer: the path is resampled to 64 evenly spaced points, so drawing speed does not matter, then scaled and compared under a small rotation search. **Direction is preserved by default** — classic $1 normalizes every stroke to its own heading, which would make a left swipe, a right swipe and an up swipe the same straight line. **Match at any orientation** opts a stroke out when the shape matters and the angle does not, at the cost of merging strokes that differ only in direction. Measured against synthetic strokes: the same shape redrawn scores .94–.99, perpendicular directions .56, opposite directions .29, and an unrelated scribble .39, against an accept threshold of .78. Strokes are stored in `~/.config/airmouse/strokes.json`, and the recorder warns when a new stroke scores as high against an existing one as a real match would.
 
 ## Custom poses
+
+The gesture dialogs are not modal: the main window stays visible and its preview keeps updating while you record, since holding a pose where the camera can see it is hard to do behind a window that hides the camera view. Control stays paused for as long as a dialog is open.
 
 **Custom gestures** records a hand shape and binds it to a keyboard shortcut, an AirMouse command (pause, pause/resume, recentre pointer), or a shell command. Hold the pose for three seconds of countdown plus about a second of sampling; frames captured while the hand is still moving are discarded, and a pose that never settles is refused rather than saved as a template that would match nothing.
 

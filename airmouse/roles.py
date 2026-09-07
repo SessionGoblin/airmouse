@@ -49,10 +49,16 @@ def _distance(a, b):
 class RoleAssigner:
     """Sticky pointer / modifier assignment across frames."""
 
-    # Which side of the mirrored preview seeds the pointer. Position, not
-    # handedness: the frame is mirrored before inference, so your right hand is
-    # reliably on the right of the image whatever the classifier says.
-    pointer_side: str = 'right'
+    # 'right' / 'left' pin the pointer to that side of the mirrored preview and
+    # are recomputed every frame, so roles never drift: crossing your hands
+    # swaps them, predictably and under your control. 'auto' keeps the sticky
+    # assignment, which follows each hand through a crossing but can settle the
+    # wrong way round and stay there.
+    #
+    # Side, not handedness: the frame is mirrored before inference, so your
+    # right hand is reliably on the right of the image whatever the classifier
+    # reports.
+    pointer_side: str = 'auto'
     position: dict = field(default_factory=lambda: {POINTER: None, MODIFIER: None})
     velocity: dict = field(default_factory=lambda: {POINTER: None, MODIFIER: None})
     seen: dict = field(default_factory=lambda: {POINTER: None, MODIFIER: None})
@@ -99,7 +105,9 @@ class RoleAssigner:
         """Which of two fresh hands drives the cursor."""
         rightmost = max(range(len(anchors)), key=lambda i: anchors[i][0])
         leftmost = min(range(len(anchors)), key=lambda i: anchors[i][0])
-        return rightmost if self.pointer_side == 'right' else leftmost
+        # Only an explicit 'left' inverts; 'auto' seeds the same way 'right'
+        # pins, so switching between them does not also flip which hand points.
+        return leftmost if self.pointer_side == 'left' else rightmost
 
     def assign(self, hands, now):
         """Set .role on each hand. Returns the same list for convenience."""
@@ -109,6 +117,9 @@ class RoleAssigner:
         anchors = [h.anchor for h in hands if h.anchor is not None]
         usable = [h for h in hands if h.anchor is not None]
         if not usable:
+            return hands
+        if self.pointer_side != 'auto':
+            self._assign_fixed(usable)
             return hands
         if len(usable) == 1:
             self._assign_single(usable[0], now)
@@ -137,6 +148,21 @@ class RoleAssigner:
         for hand in (first, second):
             self._remember(hand.role, hand.anchor, now)
         return hands
+
+    def _assign_fixed(self, usable):
+        """Roles straight from position, with no memory to drift.
+
+        A lone hand still takes the pointer: leaving it as the modifier would
+        mean nothing drives the cursor.
+        """
+        if len(usable) == 1:
+            usable[0].role = POINTER
+            return
+        pointer = self._seed_pointer([h.anchor for h in usable[:2]])
+        usable[0].role, usable[1].role = ((POINTER, MODIFIER) if pointer == 0
+                                          else (MODIFIER, POINTER))
+        for hand in usable[2:]:
+            hand.role = None
 
     def _cost(self, hand, role, now):
         """Distance from a hand to where that role is predicted to be."""

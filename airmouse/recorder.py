@@ -155,6 +155,7 @@ class GestureDialog(QDialog):
         self.library = poses.Library(list(library.templates))
         self.settings = settings
         self.source = source
+        self.capture = None
         layout = QVBoxLayout(self)
         columns = QHBoxLayout()
         layout.addLayout(columns, 1)
@@ -332,10 +333,25 @@ class GestureDialog(QDialog):
         self.list.blockSignals(False)
 
     def record(self, existing=None):
+        if self.capture is not None:
+            self.capture.raise_()
+            return
         name = existing.name if existing else self.unique_name()
         role = existing.role if existing else self.hand_role.currentData()
         dialog = RecordDialog(self.source, name, self, role=role)
-        if not dialog.exec() or dialog.template is None:
+        # Non-modal, like this dialog itself: recording asks you to hold a pose
+        # where the camera can see it, which needs the preview underneath.
+        dialog.setModal(False)
+        self.capture = dialog
+        self.setEnabled(False)
+        dialog.finished.connect(lambda result: self.recorded(dialog, existing, result))
+        dialog.show()
+        dialog.raise_()
+
+    def recorded(self, dialog, existing, result):
+        self.capture = None
+        self.setEnabled(True)
+        if not result or dialog.template is None:
             return
         template = dialog.template
         # Remember the recorded tilt so the checkbox can restore it later.
@@ -403,13 +419,15 @@ class GestureDialog(QDialog):
 class DrawDialog(QDialog):
     """Capture one stroke: pinch the modifier hand, trace, then release."""
 
-    def __init__(self, source, name, parent=None, library=None):
+    def __init__(self, source, name, parent=None, library=None, settings=None):
         super().__init__(parent)
         self.setWindowTitle(f'Drawing "{name}"')
         self.source = source            # callable -> (hands, timestamp)
         self.name = name
         self.library = library
+        self.settings = settings
         self.gates = library.gates() if library is not None else set()
+        self.gate_open = False
         self.stroke = None
         self.path = []
         self.aspect = 4/3
@@ -430,6 +448,17 @@ class DrawDialog(QDialog):
         self.timer.timeout.connect(self.sample)
         self.timer.start(25)
 
+    def gated(self, modifier):
+        """Same hysteresis the controller uses, so recording behaves like use."""
+        if self.gates:
+            self.gate_open = (modifier.features.pose is not None
+                              and self.gate_match(modifier))
+            return self.gate_open
+        pinch = getattr(self.settings, 'pinch', .32)
+        release = getattr(self.settings, 'release', .42)
+        self.gate_open = modifier.features.left < (release if self.gate_open else pinch)
+        return self.gate_open
+
     def gate_match(self, modifier):
         found = self.library.match(modifier.features.pose, modifier.features.orientation,
                                    modifier.features.chirality, role='modifier')
@@ -449,8 +478,7 @@ class DrawDialog(QDialog):
         if pointer is None or pointer.features is None:
             self.message.setText('Show your pointer hand')
             return
-        gating = (modifier.features.pose is not None and self.gate_match(modifier)
-                  if self.gates else modifier.features.left < .32)
+        gating = self.gated(modifier)
         if gating:
             self.drawing = True
             self.path.append(tuple(pointer.features.point[:2]))
@@ -463,8 +491,8 @@ class DrawDialog(QDialog):
         self.timer.stop()
         points = strokes.canonical(self.path, self.aspect)
         if points is None:
-            self.message.setText('Stroke too short')
-            self.detail.setText('Draw a larger shape, holding the pinch throughout.')
+            self.message.setText('Stroke not usable')
+            self.detail.setText(strokes.rejection(self.path, self.aspect) or 'Try again.')
             return
         self.stroke = strokes.Stroke(name=self.name, points=tuple(points))
         self.accept()
@@ -473,7 +501,8 @@ class DrawDialog(QDialog):
 class StrokeDialog(QDialog):
     """Manage drawn strokes and their bindings."""
 
-    def __init__(self, library, source, parent=None, gates=(), pose_library=None):
+    def __init__(self, library, source, parent=None, gates=(), pose_library=None,
+                 settings=None):
         super().__init__(parent)
         self.setWindowTitle('Drawn gestures • control remains paused')
         self.resize(620, 420)
@@ -482,6 +511,8 @@ class StrokeDialog(QDialog):
         self.source = source
         self.gates = tuple(gates)       # modifier poses available as gates
         self.pose_library = pose_library
+        self.settings = settings
+        self.capture = None
         layout = QVBoxLayout(self)
         columns = QHBoxLayout()
         layout.addLayout(columns, 1)
@@ -619,9 +650,23 @@ class StrokeDialog(QDialog):
             self.list.blockSignals(False)
 
     def draw(self, existing=None):
+        if self.capture is not None:
+            self.capture.raise_()
+            return
         name = existing.name if existing else self.unique_name()
-        dialog = DrawDialog(self.source, name, self, library=self.pose_library)
-        if not dialog.exec() or dialog.stroke is None:
+        dialog = DrawDialog(self.source, name, self, library=self.pose_library,
+                            settings=self.settings)
+        dialog.setModal(False)
+        self.capture = dialog
+        self.setEnabled(False)
+        dialog.finished.connect(lambda result: self.drawn(dialog, existing, result))
+        dialog.show()
+        dialog.raise_()
+
+    def drawn(self, dialog, existing, result):
+        self.capture = None
+        self.setEnabled(True)
+        if not result or dialog.stroke is None:
             return
         stroke = dialog.stroke
         if existing is not None:

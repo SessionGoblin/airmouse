@@ -139,6 +139,20 @@ def to_indicative(points):
     return rotate(points, -indicative_angle(points), about=(0.0, 0.0))
 
 
+def rejection(path, aspect=4/3):
+    """Why canonical() would refuse this path, or None if it would accept it.
+
+    A bare "too short" cannot be acted on: too few points means the gate
+    dropped mid-stroke, too little travel means the shape was drawn small.
+    """
+    if not path or len(path) < MIN_POINTS:
+        return (f'only {len(path or ())} points captured — hold the gate steady through the '
+                'whole stroke')
+    if path_length([(p[0]*aspect, p[1]) for p in path]) < MIN_TRAVEL:
+        return 'the hand barely moved — draw the shape larger'
+    return None
+
+
 def path_distance(a, b):
     return sum(math.dist(p, q) for p, q in zip(a, b)) / len(a)
 
