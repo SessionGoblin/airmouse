@@ -40,6 +40,39 @@ def stroke_label(stroke):
     return f'{stroke.name} — {stroke.argument or "unbound"}{suffix}'
 
 
+def capture_layout(dialog, detail_text, ready='Get ready…'):
+    """Shared layout for the two capture dialogs.
+
+    The message starts with real text rather than empty: a dialog sizes itself
+    when it is shown, and one sized around a blank 20px label clips the first
+    message it is later given. The reserved height and minimum width keep the
+    window still as well -- these messages change on a 25 ms timer, and a
+    dialog that resizes to fit each one jitters continuously.
+    """
+    dialog.setMinimumWidth(400)
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(20, 18, 20, 16)
+    layout.setSpacing(12)
+    message = QLabel(ready)
+    message.setAlignment(Qt.AlignCenter)
+    message.setWordWrap(True)
+    # Padding here came out of the label's own box and clipped the glyphs; the
+    # spacing belongs to the layout instead.
+    message.setStyleSheet('font-size: 20px')
+    message.setMinimumHeight(62)                # two lines at 20px
+    layout.addWidget(message)
+    detail = QLabel(detail_text)
+    detail.setWordWrap(True)
+    detail.setAlignment(Qt.AlignTop)
+    detail.setMinimumHeight(44)                 # two lines, so short text does not jump
+    layout.addWidget(detail)
+    layout.addStretch(1)
+    buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    return message, detail
+
+
 class RecordDialog(QDialog):
     """Countdown, then average the frames held steady into one template."""
 
@@ -56,19 +89,10 @@ class RecordDialog(QDialog):
         self.built_ins = []
         self.previous = None
         self.started = time.monotonic()
-        layout = QVBoxLayout(self)
-        self.message = QLabel()
-        self.message.setAlignment(Qt.AlignCenter)
-        self.message.setStyleSheet('font-size: 20px; padding: 18px')
-        layout.addWidget(self.message)
         which = 'modifier' if role == 'modifier' else 'pointer'
-        self.detail = QLabel(f'Hold the pose steady with your {which} hand, where the camera '
-                             'can see all of it.')
-        self.detail.setWordWrap(True)
-        layout.addWidget(self.detail)
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.message, self.detail = capture_layout(
+            self, f'Hold the pose steady with your {which} hand, where the camera can see '
+                  'all of it.')
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.sample)
         self.timer.start(25)
@@ -459,18 +483,9 @@ class DrawDialog(QDialog):
         self.path = []
         self.aspect = 4/3
         self.drawing = False
-        layout = QVBoxLayout(self)
-        self.message = QLabel()
-        self.message.setAlignment(Qt.AlignCenter)
-        self.message.setStyleSheet('font-size: 20px; padding: 18px')
-        layout.addWidget(self.message)
-        self.detail = QLabel('Pinch your modifier hand to start drawing, trace the shape with '
-                             'your pointer index finger, then open the pinch to finish.')
-        self.detail.setWordWrap(True)
-        layout.addWidget(self.detail)
-        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.message, self.detail = capture_layout(
+            self, 'Pinch your modifier hand to start drawing, trace the shape with your '
+                  'pointer index finger, then open the pinch to finish.')
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.sample)
         self.timer.start(25)

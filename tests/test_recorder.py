@@ -280,3 +280,69 @@ def test_the_list_is_disabled_while_a_recording_is_in_flight(tmp_path, monkeypat
     d.capture.reject()                  # cancelled
     assert d.capture is None and d.isEnabled()
     assert [t.name for t in d.library.templates] == ['a']
+
+
+# --- capture dialog layout -----------------------------------------------------
+
+RECORD_MESSAGES = ['Get ready…', 'Hold the pose… 3', 'Recording…',
+                   'No pointer hand visible', 'No modifier hand visible',
+                   'Pose was too unsteady']
+DRAW_MESSAGES = ['Get ready…', 'Pinch the modifier hand to start', 'Drawing…',
+                 'No camera frames', 'Show your modifier hand', 'Show your pointer hand',
+                 'Stroke not usable']
+DETAILS = ['only 3 points captured — hold the gate steady through the whole stroke',
+           'the hand barely moved — draw the shape larger', '42 points',
+           'Only 4 usable frames. Close and try again, holding the pose still under '
+           'even lighting.']
+
+
+def capture_dialogs():
+    record = recorder.RecordDialog(lambda: ([], None), 'test', role='modifier')
+    record.timer.stop()
+    draw = recorder.DrawDialog(lambda: ([], None), 'swipe')
+    draw.timer.stop()
+    return [(record, RECORD_MESSAGES), (draw, DRAW_MESSAGES)]
+
+
+def test_no_capture_message_is_clipped():
+    """The message label started empty, so the dialog sized itself around a
+    blank 20px label and cut the glyphs off the first real message."""
+    for dialog, messages in capture_dialogs():
+        dialog.show()
+        for text in messages:
+            dialog.message.setText(text)
+            app.processEvents()
+            assert dialog.message.sizeHint().height() <= dialog.message.height(), \
+                f'clipped: {text!r}'
+        dialog.close()
+
+
+def test_the_capture_dialog_does_not_resize_as_its_message_changes():
+    """These change on a 25 ms timer; a dialog that refits each one jitters."""
+    for dialog, messages in capture_dialogs():
+        dialog.show()
+        sizes = set()
+        for text in messages:
+            dialog.message.setText(text)
+            app.processEvents()
+            sizes.add((dialog.width(), dialog.height()))
+        assert len(sizes) == 1, f'geometry moved across messages: {sizes}'
+        dialog.close()
+
+
+def test_detail_text_fits_without_clipping():
+    for dialog, _ in capture_dialogs():
+        dialog.show()
+        for text in DETAILS:
+            dialog.detail.setText(text)
+            app.processEvents()
+            assert dialog.detail.sizeHint().height() <= dialog.detail.height(), \
+                f'clipped: {text!r}'
+        dialog.close()
+
+
+def test_the_message_starts_with_real_text():
+    """An empty label is what let the dialog size itself wrongly."""
+    for dialog, _ in capture_dialogs():
+        assert dialog.message.text().strip()
+        dialog.close()
