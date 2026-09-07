@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from .config import Settings
 from .controller import Controller
 from .calibration import CalibrationDialog
-from . import perf
+from . import actions, perf, poses
 
 EDGES = [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),
          (10,11),(11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(0,17),(17,18),(18,19),(19,20)]
@@ -28,8 +28,15 @@ class Window(QMainWindow):
         self.settings = Settings.load()
         rect = QApplication.primaryScreen().virtualGeometry()
         screens = [screen.geometry() for screen in QApplication.primaryScreen().virtualSiblings()]
+        self.library = poses.Library.load()
+        # App bindings hop to the GUI thread through the existing hotkey signal,
+        # which already exists for exactly this: the dispatcher runs on the
+        # vision thread and must not touch widgets.
+        self.dispatcher = actions.Dispatcher(app=self.receive_app_action)
         self.controller = Controller(self.settings, (rect.x(), rect.y(), rect.width(), rect.height()),
-                                     screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens])
+                                     screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens],
+                                     library=self.library, dispatcher=self.dispatcher)
+        self.last_features = (None, None)
         self.worker = self.keys = None
         self.calibrating = False
         self.previous_state = ''
@@ -111,6 +118,9 @@ class Window(QMainWindow):
         calibration = QPushButton('Calibrate active region & gestures…')
         calibration.clicked.connect(self.calibrate)
         form.addRow(calibration)
+        custom = QPushButton('Custom gestures…')
+        custom.clicked.connect(self.edit_gestures)
+        form.addRow(custom)
         self.show_preview = QCheckBox('Show preview')
         self.show_preview.setChecked(True)
         self.show_preview.setToolTip('Turn off to stop all preview rendering; hand tracking and control keep running.')
@@ -206,6 +216,14 @@ class Window(QMainWindow):
         if action == 'stop': self.controller.pause()
         self.hotkey.emit(action)
 
+    def receive_app_action(self, action):
+        """Called from the vision thread when a pose is bound to app control."""
+        if action == 'pause':
+            self.controller.pause()
+            self.hotkey.emit('stop')
+        elif action == 'toggle':
+            self.hotkey.emit('toggle')
+
     def on_hotkey_error(self, error):
         self.pause()
         self.input_error = error
@@ -255,6 +273,21 @@ class Window(QMainWindow):
         elif (not self.calibrating and self.worker and not self.worker.error and self.keys
               and self.keys.healthy() and time.monotonic()-self.worker.last_frame < .3):
             if self.controller.resume(): self.resume_button.setText('Pause control')
+
+    def edit_gestures(self):
+        self.pause()
+        self.calibrating = True
+        try:
+            from .recorder import GestureDialog
+            dialog = GestureDialog(self.library, self.settings, lambda: self.last_features, self)
+            if dialog.exec():
+                self.library = dialog.library
+                # The machine holds the library directly, and reset() re-runs
+                # __init__ with it, so swapping the reference is enough.
+                self.controller.machine.library = self.library
+        finally:
+            self.calibrating = False
+            self.pause()
 
     def calibrate(self):
         self.pause()
@@ -321,6 +354,7 @@ class Window(QMainWindow):
         item = self.worker.take()
         if not item: return
         frame, points, confidence, features, state, fps, captured = item
+        self.last_features = (features, time.monotonic())
         h,w = frame.shape[:2]
         if self.show_preview.isChecked() and time.monotonic()-self.last_preview >= self.preview_interval:
             self.last_preview = time.monotonic()
@@ -353,6 +387,7 @@ class Window(QMainWindow):
             event.ignore()
             return
         if self.keys: self.keys.close()
+        self.dispatcher.close()
         self.controller.close()
         event.accept()
 
