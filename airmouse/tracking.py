@@ -1,12 +1,34 @@
 from pathlib import Path
+import contextlib
+import os
+import sys
 import time
 import urllib.request
+import numpy as np
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 MODEL = Path.home() / '.cache' / 'airmouse' / 'hand_landmarker.task'
+
+
+@contextlib.contextmanager
+def _muted_native_stderr():
+    """Silence MediaPipe/TFLite one-time C++ init chatter (absl logs before
+    InitGoogle, so GLOG_minloglevel/TF_CPP_MIN_LOG_LEVEL don't apply). Only the
+    OS stderr fd is redirected, and only around setup; Python-level stderr and
+    all runtime inference errors are untouched."""
+    sys.stderr.flush()
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
 MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
 
 def download_model():
@@ -27,11 +49,17 @@ class HandTracker:
     def __init__(self, model=MODEL):
         if not Path(model).is_file():
             raise RuntimeError('Model missing. Run: python -m airmouse --download-model')
-        self.detector = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
-            base_options=python.BaseOptions(model_asset_path=str(model)),
-            running_mode=vision.RunningMode.VIDEO, num_hands=1,
-            min_hand_detection_confidence=.65, min_hand_presence_confidence=.65,
-            min_tracking_confidence=.65))
+        with _muted_native_stderr():
+            self.detector = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path=str(model)),
+                running_mode=vision.RunningMode.VIDEO, num_hands=1,
+                min_hand_detection_confidence=.65, min_hand_presence_confidence=.65,
+                min_tracking_confidence=.65))
+            # One warm-up inference makes the graph's one-time warnings fire (and
+            # be swallowed) here, and primes the XNNPACK delegate so the first
+            # real frame is not slower than the rest.
+            self.detector.detect_for_video(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=np.zeros((480, 640, 3), np.uint8)), 0)
         self.timestamp = 0
 
     def detect(self, frame):

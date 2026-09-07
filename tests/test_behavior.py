@@ -67,14 +67,25 @@ def test_right_click_is_latched_until_open():
     m.step(RIGHT,6,S,True)
     assert m.step(RIGHT,6.1,S,True) == [('right',)]
 
-def test_scroll_requires_dwell_and_freezes_cursor():
+def test_scroll_engage_delay_and_freezes_cursor():
     m = armed()
     f = Features((.5,.5),.8,.8,True)
-    assert m.step(f,1,S,True) == []
-    assert m.step(f,1.2,S,True) == []
-    assert m.step(f,1.4,S,True) == []
-    assert m.step(Features((.5,.4),.8,.8,True),1.5,S,True) == [('scroll',3)]
+    assert m.step(f,1,S,True) == []                 # engaging
+    assert m.step(f,1.1,S,True) == []               # .1s < .15s engage delay: frozen
+    assert m.step(f,1.2,S,True) == []               # engaged, but no vertical motion yet
+    scrolled = m.step(Features((.5,.4),.8,.8,True),1.3,S,True)   # ~.1 up * gain 50
+    assert scrolled[0][0] == 'scroll' and scrolled[0][1] >= 4
     assert m.state == State.SCROLLING
+
+def test_fast_scroll_does_not_drop_capped_steps():
+    m = armed()
+    fast = Features((.5,.1),.8,.8,True)             # large upward displacement
+    m.step(Features((.5,.5),.8,.8,True),1,S,True)   # engage start
+    m.step(Features((.5,.5),.8,.8,True),1.2,S,True) # engaged, anchor at .5
+    # (.5-.1)*50 = 20 steps requested, capped to 6; the remainder must carry
+    # into the next frame instead of being lost, so scrolling continues.
+    assert m.step(fast,1.3,S,True) == [('scroll',6)]
+    assert m.step(fast,1.35,S,True) == [('scroll',6)]
 
 def test_gestures_can_be_disabled():
     s = Settings(left=False,right=False,scroll=False)
@@ -156,3 +167,47 @@ def test_cooldown_prevents_immediate_second_press():
     assert m.step(PINCH,1.31,S,True) == []
     assert not m.down
     assert m.step(PINCH,1.6,S,True) == [('down',)]
+
+def test_lighter_pinch_registers_a_click():
+    # A pinch at .30 sits above the old .28 threshold but below the current .32,
+    # so a lighter, more natural pinch now clicks.
+    m = armed()
+    light = Features((.5,.5), .30, .8, False)
+    m.step(light,1,S,True)
+    assert m.step(light,1.1,S,True) == [('down',)]
+
+def test_pinch_confirms_within_shortened_debounce():
+    m = armed()
+    m.step(PINCH,1,S,True)
+    # Held only 60 ms: below the old 80 ms debounce, at/above the current 50 ms.
+    assert m.step(PINCH,1.06,S,True) == [('down',)]
+
+def test_cooldown_allows_faster_repeat_click():
+    m = armed()
+    m.step(PINCH,1,S,True)
+    m.step(PINCH,1.1,S,True)          # first press
+    m.step(NEUTRAL,1.2,S,True)        # release, last action at 1.2
+    m.step(PINCH,1.25,S,True)
+    # 300 ms after the release: blocked by the old .35 cooldown, allowed by .25.
+    assert m.step(PINCH,1.5,S,True) == [('down',)]
+
+def scroll_pose_points(fold=True):
+    """21 landmarks with index+middle raised; ring+little folded (fold=True) or
+    raised into an open palm (fold=False)."""
+    pts = {
+        0:(.50,.90), 1:(.42,.78), 2:(.38,.72), 3:(.36,.66), 4:(.36,.60),
+        5:(.45,.62), 6:(.45,.50), 7:(.45,.40), 8:(.45,.32),
+        9:(.50,.60), 10:(.50,.47), 11:(.50,.37), 12:(.50,.30)}
+    if fold:
+        pts.update({13:(.55,.62),14:(.56,.52),15:(.55,.58),16:(.54,.63),
+                    17:(.60,.66),18:(.61,.58),19:(.60,.62),20:(.59,.66)})
+    else:
+        pts.update({13:(.55,.62),14:(.56,.50),15:(.57,.40),16:(.58,.32),
+                    17:(.62,.64),18:(.64,.54),19:(.66,.45),20:(.68,.38)})
+    return [(pts[i][0],pts[i][1],0.) for i in range(21)]
+
+def test_scroll_pose_detected_from_landmarks():
+    assert Features.from_landmarks(scroll_pose_points(fold=True), 1.).scroll
+
+def test_open_palm_is_not_a_scroll_pose():
+    assert not Features.from_landmarks(scroll_pose_points(fold=False), 1.).scroll

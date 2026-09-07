@@ -47,3 +47,42 @@ def test_wayland_hotkeys_scan_event_nodes_when_evdev_discovery_is_empty(monkeypa
     monkeypatch.setattr(input_module.threading.Thread, 'start', lambda self: None)
     hotkeys = input_module.Hotkeys(lambda action: None, lambda error: None)
     assert [device.path for device in hotkeys.devices] == ['/dev/input/event5']
+
+
+def test_resolution_persists_and_reports_camera_fallback(monkeypatch, tmp_path):
+    import time
+    import numpy as np
+    from airmouse import worker as worker_module
+
+    monkeypatch.setattr('airmouse.config.CONFIG_PATH', tmp_path/'settings.json')
+    monkeypatch.setattr(Window, 'setup_input', lambda self: None)
+
+    class FakeWorker:
+        error = None
+        last_frame = time.monotonic()
+
+        def __init__(self, controller):
+            assert (controller.settings.camera_width, controller.settings.camera_height) == (1280, 720)
+
+        def take(self):
+            return np.zeros((480, 640, 3), dtype=np.uint8), None, None, None, 'paused', 30
+
+        def close(self):
+            return True
+
+    monkeypatch.setattr(worker_module, 'VisionWorker', FakeWorker)
+    w = Window()
+    w.resolution.setCurrentText('1280 × 720')
+    saved = Settings.load()
+    assert (saved.camera_width, saved.camera_height) == (1280, 720)
+    assert not w.controller.enabled
+    w.start_stop()
+    assert not w.resolution.isEnabled()
+    w.refresh()
+    assert '640 × 480 (requested 1280 × 720)' in w.status.text()
+    w.stop()
+    assert w.resolution.isEnabled()
+    w.close()
+    reopened = Window()
+    assert reopened.resolution.currentText() == '1280 × 720'
+    reopened.close()

@@ -18,7 +18,7 @@ class CalibrationDialog(QDialog):
                   ('release', 'Release / palm ratio', .15, .8, .01),
                   ('debounce', 'Pinch confirmation (seconds)', .03, .5, .01),
                   ('cooldown', 'Action cooldown (seconds)', .1, 2, .05),
-                  ('dwell', 'Neutral / scroll dwell (seconds)', .2, 2, .05)]
+                  ('dwell', 'Arm neutral dwell (seconds)', .2, 2, .05)]
         for key, title, lo, hi, step in fields:
             box = QDoubleSpinBox()
             box.setRange(lo, hi)

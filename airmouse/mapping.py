@@ -17,9 +17,17 @@ class AdaptiveEMA:
         return self.value
 
 class CursorMapper:
-    def __init__(self, bounds):
+    def __init__(self, bounds, screens=None):
         self.bounds = bounds
+        self.screens = tuple(screens) if screens else (bounds,)
         self.filter = AdaptiveEMA()
+
+    def visible_point(self, point):
+        """Project a desktop point onto the nearest actual monitor rectangle."""
+        candidates = [(min(x+w-1, max(x, point[0])),
+                       min(y+h-1, max(y, point[1])))
+                      for x, y, w, h in self.screens]
+        return min(candidates, key=lambda candidate: math.dist(point, candidate))
 
     def target(self, point, settings):
         x, y, width, height = self.bounds

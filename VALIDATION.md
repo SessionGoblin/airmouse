@@ -18,3 +18,7 @@ Upper-body tracking remains an optional future extension.
 ## Precision update
 
 Added regression checks for anchored pinch/drag behavior, retained subpixel motion, invalid detection release, isolated tracking jumps, cursor position on reacquisition, stationary context-menu targeting, and scroll-pose flicker. The earlier keyboard discovery issue was fixed and the readable Logitech keyboard listener and virtual-pointer initialization subsequently passed on this host. Full human gesture accuracy and compositor mouse behavior still require interactive validation; automated input tests use a recording backend.
+
+## Monitor gap handling
+
+Automated checks cover projection onto visible monitor edges, negative coordinates, vertical gaps, offset and mirrored layouts, and pointing/dragging across a large gap without getting stuck. All 35 tests passed after the resolution selector and monitor gap updates. These checks use a recording input backend; physical multi-monitor behavior and Wayland compositor output assignment remain unverified.

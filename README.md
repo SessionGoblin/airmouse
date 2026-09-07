@@ -21,13 +21,13 @@ The repository already has a working `.venv` on the development host. Launch dir
 
 ## First use and calibration
 
-1. Select a webcam, then **Start preview**. Some Linux video nodes carry metadata instead of images; choose another camera index if opening fails.
+1. Select a webcam and **Resolution**, then **Start preview**. Resolution defaults to 640 × 480 and is saved automatically. Stop preview before changing it. The status line shows the actual frame size and, if different, the requested size; available presets are requests, not a list of modes guaranteed by your camera. Higher resolutions may lower processing FPS. Some Linux video nodes carry metadata instead of images; choose another camera index if opening fails.
 2. Open **Calibrate active region & gestures**. The symmetric inner region defaults to an 18% margin, allowing screen edges to be reached without leaving the camera image. Increase the margin if your comfortable range is smaller. Apply settings to update the preview region.
 3. Adjust sensitivity (1–2), smoothing time, dead zone, pinch/release ratios, confirmation delay, and cooldown. Ratios are relative to wrist-to-middle-knuckle palm length and account for frame aspect ratio. Release must exceed pinch to provide hysteresis.
 4. Toggle any gestures you do not want. Changing settings pauses control. Calibration blocks F8 resumption until closed and leaves control paused afterward.
 5. Explicitly select **Enable control** or press **F8**. Hold an unpinched pointing hand steady for the neutral dwell (default 350 ms), then move. Entering the camera while already pinching never presses a button.
 
-Use good lighting, a visible palm, and one hand. Hand selection is limited to one detected hand; avoid placing a second hand in the active region. Higher smoothing suppresses jitter but increases lag. The configurable dead zone suppresses small stationary movements; the adaptive EMA responds faster for large movements. A speed limit prevents abrupt acquisition jumps. Screen topology is read at launch; restart after rearranging monitors. Absolute mapping covers the desktop bounding rectangle; gaps between irregularly arranged displays are resolved by the desktop compositor.
+Use good lighting, a visible palm, and one hand. Hand selection is limited to one detected hand; avoid placing a second hand in the active region. Higher smoothing suppresses jitter but increases lag. The configurable dead zone suppresses small stationary movements; the adaptive EMA responds faster for large movements. A speed limit prevents abrupt acquisition jumps. Screen topology is read at launch; restart after rearranging monitors. Absolute mapping covers the desktop bounding rectangle. Targets in gaps between irregularly arranged displays snap to the nearest visible monitor edge, for both pointing and dragging. The internal motion continues across gaps so the pointer can reach the next screen; the visible transition across a gap can exceed the normal movement speed limit. Wayland output assignment still depends on the compositor.
 
 ## Gestures and safety
 
@@ -90,7 +90,7 @@ Troubleshooting:
 - **Preview only:** read the input status message and Linux permission instructions above.
 - **Qt platform plugin error:** install the display runtime packages listed above; `QT_QPA_PLATFORM=wayland` can select native Wayland. `QT_QPA_PLATFORM=offscreen` is only for tests.
 - **Python.h / compiler missing:** install the matching Python development package and build tools before pip installation. Bundled Python builds may need `CC=gcc LDSHARED='gcc -shared'`.
-- **Low FPS:** close other camera users, use good lighting, and keep the hand visible. Capture uses a single latest-frame slot at a requested 640×480 / 30 FPS, preventing a queue of old frames.
+- **Low FPS:** close other camera users, use good lighting, and keep the hand visible. Capture uses a single latest-frame slot at your selected resolution (640×480 by default) and a requested 30 FPS, preventing a queue of old frames. Try a lower resolution if processing is slow.
 - **Clicks too easy:** decrease pinch ratio, increase confirmation time, or disable the gesture.
 - **Scrolling accidentally:** increase neutral/scroll dwell or disable scrolling.
 

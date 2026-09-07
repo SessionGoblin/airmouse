@@ -5,9 +5,9 @@ from .mapping import CursorMapper
 
 class Controller:
     """Serialized control gate, including emergency release from keyboard thread."""
-    def __init__(self, settings, bounds, backend=None):
+    def __init__(self, settings, bounds, backend=None, screens=None):
         self.settings, self.backend = settings, backend
-        self.mapper = CursorMapper(bounds)
+        self.mapper = CursorMapper(bounds, screens)
         self.machine = GestureMachine()
         self.lock = threading.RLock()
         self.enabled = False
@@ -73,12 +73,12 @@ class Controller:
                     origin = self.target
                 if self.backend and hasattr(self.backend, 'mouse'):
                     origin = tuple(self.backend.mouse.position)
-                self.mapper.filter.reset(origin)
+                self.mapper.filter.reset(self.mapper.visible_point(origin))
             actions = self.machine.step(features, now, self.settings, self.enabled)
             for action in actions:
                 if not self.backend: continue
                 if action[0] == 'move':
-                    previous = self.target or self.mapper.filter.value
+                    previous = self.mapper.filter.value
                     point = action[1]
                     if self.machine.down and self.drag_origin is not None:
                         raw = self.mapper.target(point, self.settings)
@@ -102,9 +102,12 @@ class Controller:
                     distance = math.dist(previous, desired)
                     if distance > cap:
                         desired = tuple(a+(b-a)*cap/distance for a,b in zip(previous,desired))
-                    self.target = desired
+                    # Keep the filtered path continuous through empty desktop space,
+                    # or speed limiting can trap the pointer at a monitor edge.
+                    # Only emitted positions snap across gaps (including drags).
+                    self.target = self.mapper.visible_point(desired)
                     self.mapper.filter.value = desired
-                    self.backend.move(*(round(v) for v in desired))
+                    self.backend.move(*(round(v) for v in self.target))
                 elif action[0] == 'down':
                     self.drag_origin = self.mapper.target(features.point, self.settings)
                     self.drag_cursor = self.target or self.mapper.filter.value

@@ -3,6 +3,10 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 
+SCROLL_ENGAGE = .15   # seconds holding the pose before scrolling starts
+SCROLL_GAIN = 50      # wheel steps per unit of normalized vertical hand travel
+SCROLL_STEP_CAP = 6   # max wheel steps emitted per frame
+
 class State(str, Enum):
     IDLE = 'idle'
     POINTING = 'pointing'
@@ -25,12 +29,16 @@ class Features:
         def distance(a, b):
             return math.hypot((points[a][0]-points[b][0])*aspect, points[a][1]-points[b][1])
         scale = max(distance(0, 9), .02)
-        extended = {tip: distance(0, tip) > distance(0, tip-2)*1.18 for tip in (8, 12, 16, 20)}
+        extended = {tip: distance(0, tip) > distance(0, tip-2)*1.12 for tip in (8, 12, 16, 20)}
         plane = [(p[0]*aspect,p[1],0) for p in points]
         angles = {tip: joint_angle(plane,tip-3,tip-2,tip) for tip in (8,12,16,20)}
+        # Scroll pose recognition is forgiving on how straight the raised fingers
+        # are and how tightly the others are curled; the structural guards
+        # (index+middle up, ring+little folded) still keep pointing and an open
+        # palm from being read as a scroll.
         return cls(points[8][:2], distance(4, 8)/scale, distance(4, 12)/scale,
-                   extended[8] and extended[12] and angles[8] > 155 and angles[12] > 155
-                   and angles[16] < 135 and angles[20] < 135
+                   extended[8] and extended[12] and angles[8] > 150 and angles[12] > 150
+                   and angles[16] < 145 and angles[20] < 145
                    and not extended[16] and not extended[20])
 
 class GestureMachine:
@@ -98,16 +106,19 @@ class GestureMachine:
             self.scroll_exit = None
         if desired:
             # Freeze cursor while confirming an intentional gesture.
-            if now-self.since < (settings.dwell if desired == 'scroll' else settings.debounce):
+            if now-self.since < (SCROLL_ENGAGE if desired == 'scroll' else settings.debounce):
                 return []
             if desired == 'scroll':
                 self.state = State.SCROLLING
                 if self.scroll_y is None:
                     self.scroll_y = f.point[1]
-                delta = int((self.scroll_y-f.point[1])*35)
+                # Clamp first, then advance the anchor only by what we emit, so
+                # fast strokes carry their capped remainder into later frames
+                # instead of being silently dropped.
+                delta = max(-SCROLL_STEP_CAP, min(SCROLL_STEP_CAP, int((self.scroll_y-f.point[1])*SCROLL_GAIN)))
                 if delta:
-                    self.scroll_y -= delta/35
-                    return [('scroll', max(-5, min(5, delta)))]
+                    self.scroll_y -= delta/SCROLL_GAIN
+                    return [('scroll', delta)]
                 return []
             if now-self.last_action < settings.cooldown:
                 return []
