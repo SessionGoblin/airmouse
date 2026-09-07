@@ -49,7 +49,15 @@ Holding a right pinch freezes the cursor until release. Scrolling now requires s
 
 Pinches require continuous confirmation (80 ms default). Pointer motion freezes while a gesture is being confirmed. Right click is latched until the hand opens; clicks have a 350 ms cooldown. Scrolling locks pointer movement. Loss of tracking immediately releases a drag, discards gesture state, and requires neutral reacquisition. Stalled vision (>300 ms) pauses control via the UI watchdog. Camera stop, settings changes, hotkey listener failure, and application exit also release the button. F12 releases from the keyboard listener thread independently of inference; it does not rely on receiving another camera frame.
 
-### Custom poses
+#### Two hands
+
+**Track a second hand** adds a modifier hand alongside the pointer. Roles are shown in the preview — the pointer hand is drawn in amber with a crosshair on its index fingertip, the modifier in violet — so a role changing hands is visible directly rather than only as the cursor jumping.
+
+Roles are assigned by position and motion, never by the model's handedness label: that classifier flickers exactly when two hands are close or overlapping, which is when a swap would be most damaging. Each hand is matched to where its role is predicted to be, so hands reaching across each other keep their roles through the crossing; two hands crossing at mirrored speeds are momentarily coincident and genuinely ambiguous. A role keeps its slot for 0.4 s after its hand leaves, so a brief dropout does not reshuffle. A lone hand always takes the pointer. **Pointer** selects which side seeds the cursor when both hands first appear — position in the mirrored preview, so your right hand is on the right whatever the label says.
+
+Currently only the pointer hand acts; the modifier is tracked and displayed but not yet bound to anything. Costs frame rate: with two hands enabled the model keeps hunting for a second hand whenever only one is visible, so watch the FPS in the status line and turn it off if it hurts.
+
+## Custom poses
 
 **Custom gestures** records a hand shape and binds it to a keyboard shortcut, an AirMouse command (pause, pause/resume, recentre pointer), or a shell command. Hold the pose for three seconds of countdown plus about a second of sampling; frames captured while the hand is still moving are discarded, and a pose that never settles is refused rather than saved as a template that would match nothing.
 

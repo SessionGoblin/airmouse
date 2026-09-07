@@ -3,6 +3,7 @@ import numpy as np
 from airmouse import worker as W
 from airmouse import perf
 from airmouse.gestures import Features
+from airmouse.roles import Hand, POINTER
 
 
 class FakeTracker:
@@ -15,17 +16,17 @@ class FakeTracker:
     def detect(self, frame):
         self.calls.append(frame.copy())
         if self.points is None:
-            return None, None
-        return self.points, ('Right', 0.9)
+            return []
+        return [Hand(points=self.points, label='Right', score=0.9)]
 
 
 def test_stale_frame_skips_inference():
     tracker = FakeTracker(points=[(0.5, 0.5, 0.0)] * 21)
     frame = np.zeros((48, 64, 3), np.uint8)
-    _, points, conf, feats, start_age, inference = W.analyze(
+    _, hands, start_age, inference = W.analyze(
         100.0, frame, tracker, 100.0 + W.STALE + 0.05)
     assert tracker.calls == []          # the ~12 ms model call was skipped
-    assert points is None and conf is None and feats is None
+    assert hands == []
     assert inference == 0.0
     assert start_age > W.STALE
 
@@ -35,10 +36,11 @@ def test_fresh_frame_runs_inference_on_mirrored_frame():
     tracker = FakeTracker(points=points)
     frame = np.zeros((48, 64, 3), np.uint8)
     frame[:, :10] = 255                 # bright stripe on the left edge
-    _, got, conf, feats, start_age, inference = W.analyze(10.0, frame, tracker, 10.01)
+    _, hands, start_age, inference = W.analyze(10.0, frame, tracker, 10.01)
     assert len(tracker.calls) == 1
-    assert got is points
-    assert isinstance(feats, Features)
+    assert hands[0].points is points
+    assert isinstance(hands[0].features, Features)
+    assert hands[0].role == POINTER     # a lone hand drives the cursor
     seen = tracker.calls[0]
     # The mirror moved the bright stripe from the left edge to the right edge.
     assert seen[:, -10:].mean() > seen[:, :10].mean()
@@ -46,10 +48,10 @@ def test_fresh_frame_runs_inference_on_mirrored_frame():
 
 def test_fresh_frame_without_hand_still_runs_inference():
     tracker = FakeTracker(points=None)
-    _, points, conf, feats, start_age, inference = W.analyze(
+    _, hands, start_age, inference = W.analyze(
         0.0, np.zeros((48, 64, 3), np.uint8), tracker, 0.01)
     assert len(tracker.calls) == 1      # a fresh empty frame is still inferred
-    assert points is None and feats is None
+    assert hands == []
 
 
 def test_profiler_disabled_is_noop():
@@ -83,3 +85,31 @@ def test_frame_within_cap_is_not_resized():
     out, *_ = W.analyze(0.0, frame, tracker, 0.01)
     assert out.shape == (480, 640, 3)
     assert tracker.calls[0].shape == (480, 640, 3)
+
+
+class TwoHandTracker:
+    def __init__(self, anchors):
+        self.anchors = anchors
+
+    def detect(self, frame):
+        return [Hand(points=[(x, y, 0.)] + [(x+i*.01, y+i*.01, 0.) for i in range(20)],
+                     label='', score=0.0) for x, y in self.anchors]
+
+
+def test_two_hands_are_assigned_roles_and_only_the_pointer_drives():
+    from airmouse.roles import RoleAssigner, MODIFIER, by_role
+    tracker = TwoHandTracker([(.2, .5), (.8, .5)])
+    assigner = RoleAssigner(pointer_side='right')
+    _, hands, _, _ = W.analyze(0.0, np.zeros((48, 64, 3), np.uint8), tracker, .01, assigner)
+    assert sorted(h.role for h in hands) == [MODIFIER, POINTER]
+    assert by_role(hands, POINTER).anchor[0] == .8
+    # Both hands still get features; only the role decides which one is acted on.
+    assert all(h.features is not None for h in hands)
+
+
+def test_without_an_assigner_a_single_hand_still_points():
+    """analyze stays usable without role assignment, so the freshness gate and
+    the resize path remain testable on their own."""
+    tracker = TwoHandTracker([(.5, .5)])
+    _, hands, _, _ = W.analyze(0.0, np.zeros((48, 64, 3), np.uint8), tracker, .01)
+    assert hands[0].role == POINTER

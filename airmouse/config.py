@@ -24,6 +24,8 @@ class Settings:
     scroll: bool = True
     hold_fps: bool = True
     custom: bool = True
+    two_hands: bool = True
+    pointer_side: str = 'right'
     # Longer than the pinch debounce: a custom pose can run a command, so a
     # false positive costs more than a stray click.
     custom_dwell: float = .45
@@ -43,7 +45,9 @@ class Settings:
                 raise ValueError(f'Invalid {key}')
         if self.release <= self.pinch:
             raise ValueError('Release threshold must exceed pinch threshold')
-        for key in ('left', 'right', 'scroll', 'hold_fps', 'custom'):
+        if self.pointer_side not in ('left', 'right'):
+            raise ValueError('Invalid pointer_side')
+        for key in ('left', 'right', 'scroll', 'hold_fps', 'custom', 'two_hands'):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f'Invalid {key}')
         self.camera = int(self.camera)

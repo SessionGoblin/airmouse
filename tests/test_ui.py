@@ -67,7 +67,7 @@ def test_resolution_persists_and_reports_camera_fallback(monkeypatch, tmp_path):
         def take(self):
             # The reported resolution is the capture size, which is now carried
             # alongside the (possibly downscaled) working frame.
-            return np.zeros((480, 640, 3), dtype=np.uint8), None, None, None, 'paused', 30, (640, 480)
+            return np.zeros((480, 640, 3), dtype=np.uint8), [], None, 'paused', 30, (640, 480)
 
         def close(self):
             return True

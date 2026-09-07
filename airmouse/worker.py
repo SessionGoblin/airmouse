@@ -4,7 +4,7 @@ import cv2
 from .capture import Camera
 from .tracking import HandTracker
 from .gestures import Features
-from . import perf
+from . import perf, roles
 
 # A frame older than this is not acted on. Inference is skipped for frames that
 # are already this stale when picked up, because the result would be discarded
@@ -21,11 +21,12 @@ STALE = .3
 WORK_WIDTH = 1280
 
 
-def analyze(stamp, frame, tracker, now):
+def analyze(stamp, frame, tracker, now, assigner=None):
     """Mirror the selected frame and, unless it is already stale, run landmark
-    inference on it. Returns (frame, points, confidence, features, start_age,
-    inference_seconds). Kept module-level and side-effect free so the freshness
-    gate is testable without a camera or the model."""
+    inference on it. Returns (frame, hands, start_age, inference_seconds), with
+    every hand carrying its features and its assigned role. Kept module-level
+    and side-effect free so the freshness gate is testable without a camera or
+    the model."""
     # Mirror only the frame actually selected for use, never in the capture
     # thread where most frames are dropped before they are read. Scale down
     # first when oversized, so the mirror runs on the smaller image too.
@@ -36,12 +37,18 @@ def analyze(stamp, frame, tracker, now):
     frame = cv2.flip(frame, 1)
     start_age = now - stamp
     if start_age > STALE:
-        return frame, None, None, None, start_age, 0.0
+        return frame, [], start_age, 0.0
     start = time.perf_counter()
-    points, confidence = tracker.detect(frame)
+    hands = tracker.detect(frame)
     inference = time.perf_counter() - start
-    features = Features.from_landmarks(points, frame.shape[1] / frame.shape[0]) if points else None
-    return frame, points, confidence, features, start_age, inference
+    aspect = frame.shape[1] / frame.shape[0]
+    for hand in hands:
+        hand.features = Features.from_landmarks(hand.points, aspect) if hand.points else None
+    if assigner is not None:
+        assigner.assign(hands, now)
+    elif hands:
+        hands[0].role = roles.POINTER
+    return frame, hands, start_age, inference
 
 
 class VisionWorker:
@@ -58,8 +65,9 @@ class VisionWorker:
     def run(self):
         camera = tracker = None
         try:
-            tracker = HandTracker()
             settings = self.controller.settings
+            tracker = HandTracker(hands=2 if settings.two_hands else 1)
+            assigner = roles.RoleAssigner(pointer_side=settings.pointer_side)
             camera = Camera(settings.camera, settings.camera_width, settings.camera_height,
                             hold_fps=settings.hold_fps)
             previous = time.monotonic()
@@ -70,16 +78,18 @@ class VisionWorker:
                     continue
                 stamp, frame = item
                 captured = (frame.shape[1], frame.shape[0])
-                frame, points, confidence, features, start_age, inference = analyze(
-                    stamp, frame, tracker, time.monotonic())
+                frame, hands, start_age, inference = analyze(
+                    stamp, frame, tracker, time.monotonic(), assigner)
                 now = time.monotonic()
+                pointer = roles.by_role(hands, roles.POINTER)
+                features = pointer.features if pointer else None
                 if now-stamp > STALE: features = None
                 state = self.controller.process(features, now)
                 fps = 1/max(.001, now-previous)
                 previous = now
                 self.last_frame = now
                 with self.lock:
-                    self.latest = (frame, points, confidence, features, state, fps, captured)
+                    self.latest = (frame, hands, features, state, fps, captured)
                 if perf.PROFILER.enabled:
                     perf.PROFILER.record('infer_start_age', start_age*1000)
                     if inference: perf.PROFILER.record('inference', inference*1000)

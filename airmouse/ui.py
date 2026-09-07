@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from .config import Settings
 from .controller import Controller
 from .calibration import CalibrationDialog
-from . import actions, perf, poses
+from . import actions, perf, poses, roles
 
 EDGES = [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),
          (10,11),(11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(0,17),(17,18),(18,19),(19,20)]
@@ -111,6 +111,22 @@ class Window(QMainWindow):
             box.valueChanged.connect(lambda value, k=key: self.setting(k,value))
             self.adjusters[key] = box
             form.addRow(label, box)
+        self.two_hands = QCheckBox('Track a second hand')
+        self.two_hands.setChecked(self.settings.two_hands)
+        self.two_hands.setToolTip('Adds a modifier hand alongside the pointer. Costs frame rate: '
+                                  'the model keeps hunting for a second hand whenever only one is '
+                                  'visible. Stop preview to change it.')
+        self.two_hands.toggled.connect(lambda value: self.setting('two_hands', value))
+        form.addRow(self.two_hands)
+        self.pointer_side = QComboBox()
+        for key, label in [('right', 'Right hand points'), ('left', 'Left hand points')]:
+            self.pointer_side.addItem(label, key)
+        self.pointer_side.setCurrentIndex(self.pointer_side.findData(self.settings.pointer_side))
+        self.pointer_side.setToolTip('Which side of the mirrored preview takes the cursor when '
+                                     'both hands first appear.')
+        self.pointer_side.currentIndexChanged.connect(
+            lambda: self.setting('pointer_side', self.pointer_side.currentData()))
+        form.addRow('Pointer', self.pointer_side)
         for key, label in [('left','Pinch click & drag'),('right','Middle pinch right click'),('scroll','Two-finger scroll')]:
             box = QCheckBox(label)
             box.setChecked(getattr(self.settings,key))
@@ -248,6 +264,7 @@ class Window(QMainWindow):
         self.camera.setEnabled(False)
         self.resolution.setEnabled(False)
         self.hold_fps.setEnabled(False)
+        self.two_hands.setEnabled(False)
         self.status.setText('PAUSED • starting camera and model…')
 
     def stop(self):
@@ -260,6 +277,7 @@ class Window(QMainWindow):
         self.camera.setEnabled(True)
         self.resolution.setEnabled(True)
         self.hold_fps.setEnabled(True)
+        self.two_hands.setEnabled(True)
         self.resume_button.setEnabled(False)
         self.status.setText('PAUSED • camera stopped')
 
@@ -310,7 +328,7 @@ class Window(QMainWindow):
         if not on:
             self.preview.setText('Preview hidden • hand tracking continues')
 
-    def render_preview(self, frame, points, w, h):
+    def render_preview(self, frame, hands, w, h):
         import cv2
         start = time.perf_counter()
         # Shrink to the display size before any per-pixel work, so colour
@@ -325,13 +343,23 @@ class Window(QMainWindow):
                           interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
         margin = self.settings.margin
         cv2.rectangle(view,(int(dw*margin),int(dh*margin)),(int(dw*(1-margin)),int(dh*(1-margin))),(120,220,90),2)
-        if points:
-            coords = [(int(p[0]*dw),int(p[1]*dh)) for p in points]
-            for a,b in EDGES: cv2.line(view,coords[a],coords[b],(220,190,60),2)
+        for hand in hands or ():
+            if not hand.points: continue
+            # Colour by role, so a role swapping between hands is visible at a
+            # glance rather than only as the cursor jumping.
+            pointer = hand.role == roles.POINTER
+            bone = (220,190,60) if pointer else (150,120,210)
+            joint = (70,250,220) if pointer else (200,170,255)
+            coords = [(int(p[0]*dw),int(p[1]*dh)) for p in hand.points]
+            for a,b in EDGES: cv2.line(view,coords[a],coords[b],bone,2)
             for i, point in enumerate(coords):
-                cv2.circle(view,point,4,(70,250,220),-1)
+                cv2.circle(view,point,4,joint,-1)
                 if self.debug.isChecked(): cv2.putText(view,str(i),point,cv2.FONT_HERSHEY_SIMPLEX,.35,(255,255,255),1)
-            cv2.drawMarker(view,coords[8],(255,255,255),cv2.MARKER_CROSS,22,2)
+            if pointer:
+                cv2.drawMarker(view,coords[8],(255,255,255),cv2.MARKER_CROSS,22,2)
+            if hand.role:
+                cv2.putText(view,hand.role,(coords[0][0]-20,coords[0][1]+18),
+                            cv2.FONT_HERSHEY_SIMPLEX,.45,bone,1)
         # QImage borrows rgb's buffer and QPixmap.fromImage copies it out
         # synchronously; rgb stays referenced until this method returns, so the
         # defensive full-frame QImage.copy() the old path used is unnecessary.
@@ -354,16 +382,23 @@ class Window(QMainWindow):
         if age > .3 and self.controller.enabled: self.pause()
         item = self.worker.take()
         if not item: return
-        frame, points, confidence, features, state, fps, captured = item
+        frame, hands, features, state, fps, captured = item
         self.last_features = (features, time.monotonic())
+        pointer = roles.by_role(hands, roles.POINTER)
+        points = pointer.points if pointer else None
         h,w = frame.shape[:2]
         if self.show_preview.isChecked() and time.monotonic()-self.last_preview >= self.preview_interval:
             self.last_preview = time.monotonic()
-            self.render_preview(frame, points, w, h)
+            self.render_preview(frame, hands, w, h)
         enabled = self.controller.enabled
         self.resume_button.setEnabled(bool(self.controller.backend and self.keys and self.keys.healthy() and not self.input_error))
         self.resume_button.setText('Pause control' if enabled else 'Enable control')
-        tracking = f'{confidence[0]} hand • handedness {confidence[1]:.0%}' if confidence else 'No hand • waiting'
+        if pointer:
+            tracking = f'{len(hands)} hand{"s" if len(hands) != 1 else ""}'
+            if pointer.label:
+                tracking += f' • pointer reads {pointer.label} {pointer.score:.0%}'
+        else:
+            tracking = 'No hand • waiting'
         requested = (self.settings.camera_width, self.settings.camera_height)
         resolution = f'{captured[0]} × {captured[1]}'
         if captured != requested:
