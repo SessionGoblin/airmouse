@@ -3,7 +3,7 @@
 https://github.com/user-attachments/assets/436311e0-316f-4552-9c9a-95ba83f2c343
 
 
-A local-only webcam mouse for Linux, with a Qt desktop interface, MediaPipe hand tracking, calibrated absolute positioning, adaptive smoothing, pinch click/drag, right click, and deliberate scrolling. Starts paused; preview works even when desktop input permissions are unavailable.
+A local-only webcam mouse for Linux, with a Qt desktop interface, MediaPipe hand tracking, calibrated absolute positioning, adaptive smoothing, pinch click/drag, right click, and deliberate scrolling. Starts paused; preview works even when desktop input permissions are unavailable. You are able to record gestures and positional hand movement paths to assign to actions, including arbitrary commands.
 
 ## Install and launch
 
