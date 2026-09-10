@@ -11,7 +11,7 @@ args = parser.parse_args()
 tracker = HandTracker()
 camera = None
 try:
-    assert tracker.detect(np.zeros((480,640,3), dtype=np.uint8)) == (None,None)
+    assert tracker.detect(np.zeros((480,640,3), dtype=np.uint8)) == []
     print('Model initialization and blank-frame inference: passed')
     if args.camera is not None:
         camera = Camera(args.camera)

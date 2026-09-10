@@ -42,8 +42,10 @@ def test_pointer_crosses_large_gap_without_getting_stuck(drag):
                for px, py in positions)
     assert positions[0][0] <= 99
     assert positions[-1][0] >= 900
-    controller.process(None, 6.03)
-    controller.process(Features((1, .5), .8, .8, False), 6.06)
+    # Well past the drag grace period, so this is a lost hand rather than a
+    # dropped frame and the pointer really does have to reacquire.
+    controller.process(None, 6.4)
+    controller.process(Features((1, .5), .8, .8, False), 6.43)
     assert controller.mapper.filter.value == controller.target
     if drag:
         assert backend.events[-1] == ('up',)

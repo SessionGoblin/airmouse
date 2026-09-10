@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from airmouse import poses, recorder
 from airmouse.config import Settings
 from airmouse.gestures import Features
+from airmouse.roles import Hand, POINTER, MODIFIER
 
 app = QApplication.instance() or QApplication([])
 
@@ -24,18 +25,24 @@ def hand(seed=1, jitter=0.0):
 
 
 def features_for(points, left=.8, right=.8, scroll=False):
-    pose, orientation, _ = poses.normalize(points, 1.0)
-    return Features((.5, .5), left, right, scroll, pose, orientation)
+    pose, orientation, chirality = poses.normalize(points, 1.0)
+    return Features((.5, .5), left, right, scroll, pose, orientation, chirality)
+
+
+def as_hands(features, role=POINTER):
+    return [] if features is None else [Hand(points=[(0., 0., 0.)]*21, role=role,
+                                             features=features)]
 
 
 class Feed:
-    """Stands in for the window's per-frame feature publication."""
-    def __init__(self, features):
+    """Stands in for the window's per-frame publication of tracked hands."""
+    def __init__(self, features, role=POINTER):
         self.features = features
+        self.role = role
         self.stamp = time.monotonic()
 
     def __call__(self):
-        return self.features, self.stamp
+        return as_hands(self.features, self.role), self.stamp
 
 
 def drive(dialog, seconds, step=.02):
@@ -75,7 +82,7 @@ def test_a_hand_that_disappears_restarts_rather_than_averaging_the_gap():
     feed.features = None
     dialog.sample()
     assert dialog.samples == []
-    assert 'No hand' in dialog.message.text()
+    assert 'No pointer hand' in dialog.message.text()
 
 
 def test_stale_features_count_as_no_hand():
@@ -101,7 +108,7 @@ def test_an_unsteady_pose_is_refused_rather_than_saved():
         def __call__(self):
             self.n += 1
             self.stamp = time.monotonic()
-            return features_for(hand(seed=self.n)), self.stamp
+            return as_hands(features_for(hand(seed=self.n))), self.stamp
 
     dialog = recorder.RecordDialog(Shaky(), 'jitter')
     dialog.timer.stop()
@@ -140,7 +147,7 @@ def test_shadow_check_respects_disabled_built_ins():
 def gesture_dialog(templates, tmp_path, monkeypatch):
     monkeypatch.setattr('airmouse.poses.GESTURE_PATH', tmp_path/'gestures.json')
     return recorder.GestureDialog(poses.Library(list(templates)), Settings(),
-                                  lambda: (None, None))
+                                  lambda: ([], None))
 
 
 def make_template(name, seed=1, **kw):
@@ -210,7 +217,7 @@ def test_dialog_edits_a_copy_until_saved(tmp_path, monkeypatch):
     against on the vision thread."""
     original = poses.Library([make_template('a', action='shell', argument='true')])
     monkeypatch.setattr('airmouse.poses.GESTURE_PATH', tmp_path/'gestures.json')
-    d = recorder.GestureDialog(original, Settings(), lambda: (None, None))
+    d = recorder.GestureDialog(original, Settings(), lambda: ([], None))
     d.library.remove('a')
     assert [t.name for t in original.templates] == ['a']
 
@@ -221,14 +228,6 @@ def test_record_buttons_survive_the_clicked_signal(tmp_path, monkeypatch):
     real button catches this; calling record() directly does not."""
     seen = []
 
-    class StubRecord:
-        def __init__(self, source, name, parent=None):
-            self.template = None
-
-        def exec(self):
-            return 0
-
-    monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
     d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
     monkeypatch.setattr(d, 'record', lambda existing=None: seen.append(existing))
     # Reconnect through the same lambdas the dialog builds.
@@ -240,14 +239,16 @@ def test_record_buttons_survive_the_clicked_signal(tmp_path, monkeypatch):
 
 
 def test_record_button_creates_a_uniquely_named_template(tmp_path, monkeypatch):
+    """Capture is non-modal now, so the result arrives through `finished`
+    rather than from exec(); drive that path directly."""
     built = make_template('Gesture 1', seed=4)
 
-    class StubRecord:
-        def __init__(self, source, name, parent=None):
-            self.template = poses.Template(name=name, pose=built.pose, threshold=.2)
-
-        def exec(self):
-            return 1
+    class StubRecord(recorder.RecordDialog):
+        def __init__(self, source, name, parent=None, role='pointer'):
+            super().__init__(source, name, parent, role=role)
+            self.timer.stop()
+            self.template = poses.Template(name=name, pose=built.pose,
+                                           threshold=.2, role=role)
 
         def shadows(self, settings):
             return []
@@ -255,6 +256,93 @@ def test_record_button_creates_a_uniquely_named_template(tmp_path, monkeypatch):
     monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
     d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
     d.record_button.click()
+    d.capture.accept()                  # the user finishes the recording
     assert [t.name for t in d.library.templates] == ['a', 'Gesture 1']
+    assert d.capture is None and d.isEnabled()
     d.record_button.click()
+    d.capture.accept()
     assert [t.name for t in d.library.templates] == ['a', 'Gesture 1', 'Gesture 2']
+
+
+def test_the_list_is_disabled_while_a_recording_is_in_flight(tmp_path, monkeypatch):
+    """Non-modal capture must still stop the list being edited underneath it."""
+    class StubRecord(recorder.RecordDialog):
+        def __init__(self, source, name, parent=None, role='pointer'):
+            super().__init__(source, name, parent, role=role)
+            self.timer.stop()
+
+    monkeypatch.setattr(recorder, 'RecordDialog', StubRecord)
+    d = gesture_dialog([make_template('a')], tmp_path, monkeypatch)
+    d.record_button.click()
+    assert d.capture is not None and not d.isEnabled()
+    d.record_button.click()             # a second press must not stack dialogs
+    assert d.capture is not None
+    d.capture.reject()                  # cancelled
+    assert d.capture is None and d.isEnabled()
+    assert [t.name for t in d.library.templates] == ['a']
+
+
+# --- capture dialog layout -----------------------------------------------------
+
+RECORD_MESSAGES = ['Get ready…', 'Hold the pose… 3', 'Recording…',
+                   'No pointer hand visible', 'No modifier hand visible',
+                   'Pose was too unsteady']
+DRAW_MESSAGES = ['Get ready…', 'Pinch the modifier hand to start', 'Drawing…',
+                 'No camera frames', 'Show your modifier hand', 'Show your pointer hand',
+                 'Stroke not usable']
+DETAILS = ['only 3 points captured — hold the gate steady through the whole stroke',
+           'the hand barely moved — draw the shape larger', '42 points',
+           'Only 4 usable frames. Close and try again, holding the pose still under '
+           'even lighting.']
+
+
+def capture_dialogs():
+    record = recorder.RecordDialog(lambda: ([], None), 'test', role='modifier')
+    record.timer.stop()
+    draw = recorder.DrawDialog(lambda: ([], None), 'swipe')
+    draw.timer.stop()
+    return [(record, RECORD_MESSAGES), (draw, DRAW_MESSAGES)]
+
+
+def test_no_capture_message_is_clipped():
+    """The message label started empty, so the dialog sized itself around a
+    blank 20px label and cut the glyphs off the first real message."""
+    for dialog, messages in capture_dialogs():
+        dialog.show()
+        for text in messages:
+            dialog.message.setText(text)
+            app.processEvents()
+            assert dialog.message.sizeHint().height() <= dialog.message.height(), \
+                f'clipped: {text!r}'
+        dialog.close()
+
+
+def test_the_capture_dialog_does_not_resize_as_its_message_changes():
+    """These change on a 25 ms timer; a dialog that refits each one jitters."""
+    for dialog, messages in capture_dialogs():
+        dialog.show()
+        sizes = set()
+        for text in messages:
+            dialog.message.setText(text)
+            app.processEvents()
+            sizes.add((dialog.width(), dialog.height()))
+        assert len(sizes) == 1, f'geometry moved across messages: {sizes}'
+        dialog.close()
+
+
+def test_detail_text_fits_without_clipping():
+    for dialog, _ in capture_dialogs():
+        dialog.show()
+        for text in DETAILS:
+            dialog.detail.setText(text)
+            app.processEvents()
+            assert dialog.detail.sizeHint().height() <= dialog.detail.height(), \
+                f'clipped: {text!r}'
+        dialog.close()
+
+
+def test_the_message_starts_with_real_text():
+    """An empty label is what let the dialog size itself wrongly."""
+    for dialog, _ in capture_dialogs():
+        assert dialog.message.text().strip()
+        dialog.close()

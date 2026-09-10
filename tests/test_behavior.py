@@ -1,6 +1,7 @@
 import math
 import pytest
 from airmouse.config import Settings
+from airmouse import gestures
 from airmouse.gestures import Features, GestureMachine, State
 from airmouse.mapping import CursorMapper, AdaptiveEMA
 from airmouse.controller import Controller
@@ -54,9 +55,19 @@ def test_tracking_loss_and_pause_release_drag(paused):
     m = armed()
     m.step(PINCH,1,S,True)
     m.step(PINCH,1.1,S,True)
-    assert m.step(None,1.2,S,not paused) == [('up',)]
+    if paused:
+        # An emergency stop is not a gesture: it releases on the spot, with no
+        # grace period to ride out.
+        assert m.step(None,1.2,S,False) == [('up',)]
+    else:
+        # A held drag latches through frames it cannot read, then gives up once
+        # the hand has been unreadable for longer than the grace period.
+        assert m.step(None,1.2,S,True) == []
+        assert m.down
+        assert m.step(None,1.1+S.drag_grace+.01,S,True) == [('up',)]
+        assert m.release_reason == gestures.RELEASE_TIMEOUT
     assert not m.armed
-    assert m.step(None,1.3,S,not paused) == []
+    assert m.step(None,1.5,S,not paused) == []
 
 def test_right_click_is_latched_until_open():
     m = armed()
@@ -143,6 +154,54 @@ def test_initial_movement_is_speed_limited():
 def test_bad_calibration_rejected():
     with pytest.raises(ValueError): Settings(pinch=.5,release=.2).validate()
     with pytest.raises(ValueError): Settings(smoothing=float('nan')).validate()
+    with pytest.raises(ValueError): Settings(precision_gain=1.5).validate()
+    with pytest.raises(ValueError): Settings(precision_gain=0).validate()
+    with pytest.raises(ValueError): Settings(drag_grace=.9).validate()
+    with pytest.raises(ValueError): Settings(precision_assist='yes').validate()
+
+def test_a_settings_file_without_the_new_fields_keeps_its_calibration(monkeypatch,tmp_path):
+    import json
+    from dataclasses import asdict
+    monkeypatch.setattr('airmouse.config.CONFIG_PATH',tmp_path/'settings.json')
+    fresh = {k:v for k,v in asdict(Settings(sensitivity=1.5,smoothing=.2)).items()
+             if k not in ('precision_assist','precision_gain','drag_grace')}
+    (tmp_path/'settings.json').write_text(json.dumps(fresh))
+    loaded = Settings.load()
+    assert (loaded.sensitivity,loaded.smoothing) == (1.5,.2)
+    assert loaded.drag_grace == Settings().drag_grace
+
+def test_an_unknown_setting_does_not_discard_the_rest_of_the_file(monkeypatch,tmp_path):
+    """A file from a newer build used to fail the whole constructor and reset
+    the user's entire calibration over one key this build had never heard of."""
+    import json
+    from dataclasses import asdict
+    monkeypatch.setattr('airmouse.config.CONFIG_PATH',tmp_path/'settings.json')
+    stored = asdict(Settings(sensitivity=1.75))
+    stored['setting_from_a_later_build'] = 42
+    (tmp_path/'settings.json').write_text(json.dumps(stored))
+    assert Settings.load().sensitivity == 1.75
+
+def test_the_retired_velocity_gain_settings_are_carried_across(monkeypatch,tmp_path):
+    """The velocity-gain curve is gone -- it made the pointer history-dependent --
+    but the switch and the slow-end gain still mean something, so a settings
+    file written against the old names must not lose them. `gain_max` described
+    high-speed lead, which no longer exists to configure."""
+    import json
+    from dataclasses import asdict
+    monkeypatch.setattr('airmouse.config.CONFIG_PATH',tmp_path/'settings.json')
+    stored = {k:v for k,v in asdict(Settings()).items()
+              if k not in ('precision_assist','precision_gain')}
+    stored.update(pointer_gain=False, gain_min=.3, gain_max=1.9)
+    (tmp_path/'settings.json').write_text(json.dumps(stored))
+    loaded = Settings.load()
+    assert loaded.precision_assist is False
+    assert loaded.precision_gain == .3
+
+def test_a_corrupt_settings_file_still_falls_back_to_defaults(monkeypatch,tmp_path):
+    monkeypatch.setattr('airmouse.config.CONFIG_PATH',tmp_path/'settings.json')
+    for content in ('not json at all','[]','{"sensitivity": 99}'):
+        (tmp_path/'settings.json').write_text(content)
+        assert Settings.load().sensitivity == Settings().sensitivity
 
 def test_stalled_processing_releases_drag_and_requires_reacquisition():
     backend = FakeInput()

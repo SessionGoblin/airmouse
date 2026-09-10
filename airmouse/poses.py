@@ -126,6 +126,16 @@ class Template:
     # None matches either hand; a value requires the palm to wind the same way
     # it did when recorded.
     chirality: int = None
+    # Which hand this pose is read from. Chirality stays agnostic even for a
+    # modifier pose: the role already selects the hand by position, so locking
+    # the mirror too would only break things when the hands are raised in the
+    # other order.
+    role: str = 'pointer'
+    # Only match while the modifier hand holds this named pose. Empty matches
+    # in every mode.
+    when: str = ''
+    # Modifier poses only: holding this one opens stroke drawing.
+    gates_drawing: bool = False
 
     def matches(self, pose, orientation, chirality=None):
         """Distance if this template accepts the pose, else None."""
@@ -181,14 +191,32 @@ def build(name, samples, orientations=None, chiralities=None, **binding):
 class Library:
     templates: list = field(default_factory=list)
 
-    def match(self, pose, orientation, chirality=None):
-        """Closest accepting template, or None."""
+    def match(self, pose, orientation, chirality=None, role='pointer', mode=None):
+        """Closest accepting template for one hand, or None.
+
+        A template scoped to the held mode beats an unscoped one at the same
+        distance: the more specific binding is the one the user asked for by
+        holding the modifier. Unscoped templates still match in every mode, or
+        holding a modifier pose would switch off every ordinary gesture.
+        """
         best = None
         for template in self.templates:
+            if template.role != role:
+                continue
+            if template.when and template.when != mode:
+                continue
             gap = template.matches(pose, orientation, chirality)
-            if gap is not None and (best is None or gap < best[1]):
-                best = (template, gap)
+            if gap is None:
+                continue
+            rank = (0 if template.when else 1, gap)
+            if best is None or rank < best[1]:
+                best = (template, rank)
         return best[0] if best else None
+
+    def gates(self):
+        """Names of modifier poses that open stroke drawing."""
+        return {t.name for t in self.templates
+                if t.role == 'modifier' and t.gates_drawing}
 
     def conflict(self, candidate):
         """Existing template a candidate overlaps, if any.
@@ -205,12 +233,17 @@ class Library:
                 continue
             if not template.pose or not candidate.pose:
                 continue
+            # Templates read from different hands, or scoped to different
+            # modes, never compete: the same shape can mean one thing on the
+            # pointer and another on the modifier.
+            if template.role != candidate.role or template.when != candidate.when:
+                continue
             if distance(candidate.pose, template.pose) < max(candidate.threshold,
                                                              template.threshold):
                 return template
         return None
 
-    def nearest(self, pose, orientation=None):
+    def nearest(self, pose, orientation=None, role='pointer'):
         """Closest template and its distance, ignoring thresholds.
 
         For diagnostics: shows how near a pose came when nothing matched.
@@ -218,7 +251,7 @@ class Library:
         if pose is None or not self.templates:
             return None, None
         scored = [(t, min(distance(pose, t.pose), distance(mirrored(pose), t.pose)))
-                  for t in self.templates if t.pose]
+                  for t in self.templates if t.pose and t.role == role]
         return min(scored, key=lambda pair: pair[1]) if scored else (None, None)
 
     def replace(self, template):
@@ -259,3 +292,45 @@ class Library:
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps([asdict(t) for t in self.templates], indent=2))
         temporary.replace(path)
+
+
+class PoseLatch:
+    """Confirm a held pose, fire once, and re-arm only after it is released.
+
+    The pointer hand gets this behaviour inside the gesture machine, where it is
+    interleaved with the pinch priority chain. The modifier hand has no such
+    chain -- it only ever holds a pose -- so it uses this directly rather than
+    running a second gesture machine that would try to click with the off hand.
+    """
+
+    def __init__(self):
+        self.template = None       # what is currently held and confirmed
+        self.candidate = None
+        self.since = 0.0
+        self.latched = False
+
+    def reset(self):
+        self.__init__()
+
+    def update(self, template, now, dwell):
+        """Feed this frame's match. Returns a template only on the firing frame.
+
+        The held template is exposed as ``self.template`` for as long as it is
+        confirmed, which is what makes a modifier pose a mode rather than an
+        event.
+        """
+        if template is None:
+            self.template = self.candidate = None
+            self.latched = False
+            return None
+        if self.candidate is None or self.candidate.name != template.name:
+            self.candidate, self.since, self.latched = template, now, False
+            self.template = None
+            return None
+        if now - self.since < dwell:
+            return None
+        self.template = template
+        if self.latched:
+            return None
+        self.latched = True
+        return template

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from .config import Settings
 from .controller import Controller
 from .calibration import CalibrationDialog
-from . import actions, perf, poses
+from . import actions, perf, poses, roles, strokes
 
 EDGES = [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),
          (10,11),(11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(0,17),(17,18),(18,19),(19,20)]
@@ -30,14 +30,17 @@ class Window(QMainWindow):
         rect = QApplication.primaryScreen().virtualGeometry()
         screens = [screen.geometry() for screen in QApplication.primaryScreen().virtualSiblings()]
         self.library = poses.Library.load()
+        self.stroke_library = strokes.StrokeLibrary.load()
         # App bindings hop to the GUI thread through the existing hotkey signal,
         # which already exists for exactly this: the dispatcher runs on the
         # vision thread and must not touch widgets.
         self.dispatcher = actions.Dispatcher(app=self.receive_app_action)
         self.controller = Controller(self.settings, (rect.x(), rect.y(), rect.width(), rect.height()),
                                      screens=[(r.x(), r.y(), r.width(), r.height()) for r in screens],
-                                     library=self.library, dispatcher=self.dispatcher)
-        self.last_features = (None, None)
+                                     library=self.library, dispatcher=self.dispatcher,
+                                     stroke_library=self.stroke_library)
+        self.last_hands = ([], None)
+        self.dialog = None
         self.worker = self.keys = None
         self.calibrating = False
         self.previous_state = ''
@@ -111,9 +114,40 @@ class Window(QMainWindow):
             box.valueChanged.connect(lambda value, k=key: self.setting(k,value))
             self.adjusters[key] = box
             form.addRow(label, box)
-        for key, label in [('left','Pinch click & drag'),('right','Middle pinch right click'),('scroll','Two-finger scroll')]:
+        self.two_hands = QCheckBox('Track a second hand')
+        self.two_hands.setChecked(self.settings.two_hands)
+        self.two_hands.setToolTip('Adds a modifier hand alongside the pointer. Costs frame rate: '
+                                  'the model keeps hunting for a second hand whenever only one is '
+                                  'visible. Stop preview to change it.')
+        self.two_hands.toggled.connect(lambda value: self.setting('two_hands', value))
+        form.addRow(self.two_hands)
+        self.pointer_side = QComboBox()
+        for key, label in [('right', 'Right hand points'), ('left', 'Left hand points'),
+                           ('auto', 'Automatic')]:
+            self.pointer_side.addItem(label, key)
+        self.pointer_side.setCurrentIndex(self.pointer_side.findData(self.settings.pointer_side))
+        self.pointer_side.setToolTip('Right or Left pins the pointer to that side of the '
+                                     'mirrored preview and never drifts; crossing your hands '
+                                     'swaps them. Automatic follows each hand through a '
+                                     'crossing, but can settle the wrong way round.')
+        self.pointer_side.currentIndexChanged.connect(
+            lambda: self.setting('pointer_side', self.pointer_side.currentData()))
+        form.addRow('Pointer', self.pointer_side)
+        for key, label, tip in [
+                ('left','Pinch click & drag', ''),
+                ('right','Middle pinch right click', ''),
+                ('scroll','Two-finger scroll', ''),
+                ('fling','Fling on a fast release', ''),
+                ('precision_assist','Low-speed precision assist',
+                 'When your hand settles, the cursor moves a fraction as far for the '
+                 'same hand movement over a short range, which makes small targets '
+                 'easier to land on. Ordinary and fast movement are untouched: they '
+                 'use the plain absolute mapping, so Sensitivity means exactly what it '
+                 'always did and the same hand position always maps to the same place '
+                 'on screen.')]:
             box = QCheckBox(label)
             box.setChecked(getattr(self.settings,key))
+            if tip: box.setToolTip(tip)
             box.toggled.connect(lambda value, k=key: self.setting(k,value))
             form.addRow(box)
         calibration = QPushButton('Calibrate active region & gestures…')
@@ -122,6 +156,9 @@ class Window(QMainWindow):
         custom = QPushButton('Custom gestures…')
         custom.clicked.connect(self.edit_gestures)
         form.addRow(custom)
+        drawn = QPushButton('Drawn gestures…')
+        drawn.clicked.connect(self.edit_strokes)
+        form.addRow(drawn)
         self.show_preview = QCheckBox('Show preview')
         self.show_preview.setChecked(True)
         self.show_preview.setToolTip('Turn off to stop all preview rendering; hand tracking and control keep running.')
@@ -130,7 +167,8 @@ class Window(QMainWindow):
         self.debug = QCheckBox('Show tuning diagnostics')
         self.debug.setChecked(debug)
         form.addRow(self.debug)
-        form.addRow(QLabel('Point: index finger\nClick / drag: thumb + index\nRight click: thumb + middle\nScroll: index + middle extended,\nring + little finger folded; move up/down'))
+        form.addRow(QLabel('Draw: pinch the modifier hand, trace with the pointer hand\n'
+                           'Point: index finger\nClick / drag: thumb + index\nRight click: thumb + middle\nScroll: index + middle extended,\nring + little finger folded; move up/down'))
         self.status = QLabel('PAUSED • camera stopped')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -202,12 +240,24 @@ class Window(QMainWindow):
             self.keys = Hotkeys(self.receive_hotkey, self.receive_hotkey_failure)
             self.controller.backend = create_backend(self.controller.mapper.bounds)
             self.input_error = ''
+            self.prime_keyboard()
             self.platform_status.setText(('Wayland uinput' if wayland() else 'Native / X11') + ' input ready • global F8 / F12 active')
         except Exception as exc:
             if self.keys: self.keys.close()
             self.keys = None
             self.input_error = str(exc)
             self.platform_status.setText('Preview only: ' + self.input_error)
+
+    def prime_keyboard(self):
+        """Build the virtual keyboard ahead of the gesture that needs it.
+
+        Only when something is actually bound to a key, so a setup that never
+        presses one still never asks for the extra uinput node.
+        """
+        bound = [t for t in self.library.templates if t.action == 'key']
+        bound += [x for x in self.stroke_library.strokes if x.action == 'key']
+        if bound:
+            self.dispatcher.prime()
 
     def receive_hotkey_failure(self, error):
         self.controller.pause()
@@ -248,9 +298,17 @@ class Window(QMainWindow):
         self.camera.setEnabled(False)
         self.resolution.setEnabled(False)
         self.hold_fps.setEnabled(False)
+        self.two_hands.setEnabled(False)
         self.status.setText('PAUSED • starting camera and model…')
 
+    def close_dialog(self):
+        if self.dialog is not None:
+            self.dialog.reject()
+            self.dialog = None
+            self.calibrating = False
+
     def stop(self):
+        self.close_dialog()
         self.pause()
         if self.worker and not self.worker.close():
             self.platform_status.setText('Camera is still shutting down; control remains disabled.')
@@ -260,6 +318,7 @@ class Window(QMainWindow):
         self.camera.setEnabled(True)
         self.resolution.setEnabled(True)
         self.hold_fps.setEnabled(True)
+        self.two_hands.setEnabled(True)
         self.resume_button.setEnabled(False)
         self.status.setText('PAUSED • camera stopped')
 
@@ -275,42 +334,73 @@ class Window(QMainWindow):
               and self.keys.healthy() and time.monotonic()-self.worker.last_frame < .3):
             if self.controller.resume(): self.resume_button.setText('Pause control')
 
-    def edit_gestures(self):
+    def open_dialog(self, dialog, applied):
+        """Show a gesture dialog without blocking the main window.
+
+        These dialogs ask you to hold a pose or draw a shape, which needs the
+        live preview they would otherwise cover. Modal dialogs kept the timer
+        running but hid the one thing you need to see, so they are shown
+        non-modally and control stays paused for as long as one is open.
+        """
+        if self.dialog is not None:
+            self.dialog.raise_()
+            self.dialog.activateWindow()
+            return
         self.pause()
         self.calibrating = True
-        try:
-            from .recorder import GestureDialog
-            dialog = GestureDialog(self.library, self.settings, lambda: self.last_features, self)
-            if dialog.exec():
-                self.library = dialog.library
-                # The machine holds the library directly, and reset() re-runs
-                # __init__ with it, so swapping the reference is enough.
-                self.controller.machine.library = self.library
-        finally:
+        self.dialog = dialog
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, False)
+
+        def finished(result):
+            self.dialog = None
             self.calibrating = False
+            if result:
+                applied(dialog)
             self.pause()
+        dialog.finished.connect(finished)
+        dialog.show()
+        dialog.raise_()
+
+    def edit_gestures(self):
+        from .recorder import GestureDialog
+
+        def applied(dialog):
+            self.library = dialog.library
+            # The machine holds the library directly, and reset() re-runs
+            # __init__ with it, so swapping the reference is enough.
+            self.controller.machine.library = self.library
+            self.prime_keyboard()
+        self.open_dialog(GestureDialog(self.library, self.settings,
+                                       lambda: self.last_hands, self), applied)
+
+    def edit_strokes(self):
+        from .recorder import StrokeDialog
+
+        def applied(dialog):
+            self.stroke_library = dialog.library
+            self.controller.stroke_library = self.stroke_library
+            self.prime_keyboard()
+        self.open_dialog(StrokeDialog(self.stroke_library, lambda: self.last_hands, self,
+                                      gates=sorted(self.library.gates()),
+                                      pose_library=self.library,
+                                      settings=self.settings), applied)
 
     def calibrate(self):
-        self.pause()
-        self.calibrating = True
-        try:
-            dialog = CalibrationDialog(self.settings,self)
-            if dialog.exec():
-                self.settings = dialog.settings
-                self.controller.settings = self.settings
-                for key, box in self.adjusters.items():
-                    box.blockSignals(True)
-                    box.setValue(getattr(self.settings,key))
-                    box.blockSignals(False)
-        finally:
-            self.calibrating = False
-            self.pause()
+        def applied(dialog):
+            self.settings = dialog.settings
+            self.controller.settings = self.settings
+            for key, box in self.adjusters.items():
+                box.blockSignals(True)
+                box.setValue(getattr(self.settings,key))
+                box.blockSignals(False)
+        self.open_dialog(CalibrationDialog(self.settings, self), applied)
 
     def on_preview_toggle(self, on):
         if not on:
             self.preview.setText('Preview hidden • hand tracking continues')
 
-    def render_preview(self, frame, points, w, h):
+    def render_preview(self, frame, hands, w, h):
         import cv2
         start = time.perf_counter()
         # Shrink to the display size before any per-pixel work, so colour
@@ -325,13 +415,23 @@ class Window(QMainWindow):
                           interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
         margin = self.settings.margin
         cv2.rectangle(view,(int(dw*margin),int(dh*margin)),(int(dw*(1-margin)),int(dh*(1-margin))),(120,220,90),2)
-        if points:
-            coords = [(int(p[0]*dw),int(p[1]*dh)) for p in points]
-            for a,b in EDGES: cv2.line(view,coords[a],coords[b],(220,190,60),2)
+        for hand in hands or ():
+            if not hand.points: continue
+            # Colour by role, so a role swapping between hands is visible at a
+            # glance rather than only as the cursor jumping.
+            pointer = hand.role == roles.POINTER
+            bone = (220,190,60) if pointer else (150,120,210)
+            joint = (70,250,220) if pointer else (200,170,255)
+            coords = [(int(p[0]*dw),int(p[1]*dh)) for p in hand.points]
+            for a,b in EDGES: cv2.line(view,coords[a],coords[b],bone,2)
             for i, point in enumerate(coords):
-                cv2.circle(view,point,4,(70,250,220),-1)
+                cv2.circle(view,point,4,joint,-1)
                 if self.debug.isChecked(): cv2.putText(view,str(i),point,cv2.FONT_HERSHEY_SIMPLEX,.35,(255,255,255),1)
-            cv2.drawMarker(view,coords[8],(255,255,255),cv2.MARKER_CROSS,22,2)
+            if pointer:
+                cv2.drawMarker(view,coords[8],(255,255,255),cv2.MARKER_CROSS,22,2)
+            if hand.role:
+                cv2.putText(view,hand.role,(coords[0][0]-20,coords[0][1]+18),
+                            cv2.FONT_HERSHEY_SIMPLEX,.45,bone,1)
         # QImage borrows rgb's buffer and QPixmap.fromImage copies it out
         # synchronously; rgb stays referenced until this method returns, so the
         # defensive full-frame QImage.copy() the old path used is unnecessary.
@@ -351,37 +451,73 @@ class Window(QMainWindow):
             self.stop()
             self.platform_status.setText(error)
             return
-        if age > .3 and self.controller.enabled: self.pause()
+        if age > .3 and self.controller.enabled:
+            self.pause()
+            self.status.setText(f'PAUSED • vision stalled for {age:.1f}s • control disabled')
         item = self.worker.take()
         if not item: return
-        frame, points, confidence, features, state, fps, captured = item
-        self.last_features = (features, time.monotonic())
+        frame, hands, features, state, fps, captured = item
+        pointer = roles.by_role(hands, roles.POINTER)
+        points = pointer.points if pointer else None
+        self.last_hands = (hands, time.monotonic())
         h,w = frame.shape[:2]
         if self.show_preview.isChecked() and time.monotonic()-self.last_preview >= self.preview_interval:
             self.last_preview = time.monotonic()
-            self.render_preview(frame, points, w, h)
+            self.render_preview(frame, hands, w, h)
         enabled = self.controller.enabled
         self.resume_button.setEnabled(bool(self.controller.backend and self.keys and self.keys.healthy() and not self.input_error))
         self.resume_button.setText('Pause control' if enabled else 'Enable control')
-        tracking = f'{confidence[0]} hand • handedness {confidence[1]:.0%}' if confidence else 'No hand • waiting'
+        if pointer:
+            tracking = f'{len(hands)} hand{"s" if len(hands) != 1 else ""}'
+            if pointer.label:
+                tracking += f' • pointer reads {pointer.label} {pointer.score:.0%}'
+        else:
+            tracking = 'No hand • waiting'
         requested = (self.settings.camera_width, self.settings.camera_height)
         resolution = f'{captured[0]} × {captured[1]}'
         if captured != requested:
             resolution += f' (requested {requested[0]} × {requested[1]})'
-        self.status.setText(f'{"ACTIVE" if enabled else "PAUSED"} • {state} • {tracking} • {resolution} • {fps:.0f} FPS')
+        mode = f' • mode {self.controller.mode}' if self.controller.mode else ''
+        self.status.setText(f'{"ACTIVE" if enabled else "PAUSED"} • {state}{mode} • {tracking} • {resolution} • {fps:.0f} FPS')
         if state != self.previous_state:
             self.transitions.append(f'{time.strftime("%H:%M:%S")} {self.previous_state or "start"} → {state}')
             self.transitions = self.transitions[-6:]
             self.previous_state = state
         if self.debug.isChecked():
             text = f'FPS {fps:.1f} | cursor target {self.controller.target}\n'
+            # Ahead of the landmark readouts, and outside the features guard:
+            # a drag latched through a frame with no hand is exactly when this
+            # is worth reading, and exactly when there are no features.
+            text += '\n'.join(self.controller.telemetry.lines())+'\n'
             if features:
                 text += f'Pinch / palm: index {features.left:.3f}, middle {features.right:.3f}; scroll pose {features.scroll}\n'
                 from .gestures import joint_angle
                 text += f'Index PIP angle {joint_angle(points, 5, 6, 8):.1f}°; middle PIP angle {joint_angle(points, 9, 10, 12):.1f}°\n'
                 text += self.pose_diagnostics(features)
+                text += self.modifier_diagnostics(roles.by_role(hands, roles.MODIFIER))
+                name, rating = self.controller.last_stroke
+                if name:
+                    verdict = 'matched' if rating >= strokes.THRESHOLD else 'below threshold'
+                    text += f'Last stroke: nearest "{name}" {rating:.3f} -> {verdict}\n'
                 text += ' '.join(f'{i}:({p[0]:.3f},{p[1]:.3f},{p[2]:.3f})' for i,p in enumerate(points))+'\n'
             self.diagnostics.setPlainText(text+'\n'.join(self.transitions))
+
+    def modifier_diagnostics(self, modifier):
+        """Why the modifier hand is or is not holding a mode, and whether it is
+        gating drawing -- which freezes the cursor, and is otherwise invisible."""
+        gates = self.library.gates()
+        source = 'gate pose' if gates else 'pinch'
+        if modifier is None or modifier.features is None:
+            return f'Modifier: not visible • drawing gated by {source}\n'
+        template, gap = self.library.nearest(modifier.features.pose, role='modifier')
+        if template is None:
+            near = 'no modifier poses recorded'
+        else:
+            verdict = 'MATCH' if gap <= template.threshold else 'too far'
+            near = f'nearest "{template.name}" {gap:.3f} / {template.threshold:.3f} -> {verdict}'
+        return (f'Modifier: {near} • pinch {modifier.features.left:.2f}\n'
+                f'Gate: {source}, {"OPEN (cursor frozen)" if self.controller.gate_open else "closed"}'
+                f' • gates: {", ".join(sorted(gates)) or "none"}\n')
 
     def pose_diagnostics(self, features):
         """Why a custom pose did or did not fire, in the units it is judged in.
@@ -410,15 +546,18 @@ class Window(QMainWindow):
                 and features.chirality != template.chirality):
             verdict = 'shape ok, wrong hand'
         armed = 'armed' if self.controller.machine.armed else 'NOT armed (hold an open hand)'
+        mode = self.controller.mode
         from . import poses as _poses
         turn = _poses.winding(features.pose)
         hand = ('either' if template.chirality is None else
                 f'locked, this hand {features.chirality}')
         return (f'Nearest pose "{template.name}" {gap:.3f} / {template.threshold:.3f} '
                 f'-> {verdict} • {armed}\n'
-                f'Palm winding {turn:+.2f} (ambiguous under {_poses.AMBIGUOUS}) • hand {hand}\n')
+                f'Palm winding {turn:+.2f} (ambiguous under {_poses.AMBIGUOUS}) • hand {hand}\n'
+                f'Modifier mode: {mode or "none"}\n')
 
     def closeEvent(self, event):
+        self.close_dialog()
         self.stop()
         if self.worker:
             event.ignore()
