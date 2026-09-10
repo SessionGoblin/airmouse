@@ -144,12 +144,21 @@ def test_a_click_never_throws():
 
 def test_a_lost_hand_mid_drag_releases_instead_of_throwing():
     """Tracking failure is not intent: a hand that vanishes mid-sweep must drop
-    the window where it is, not hurl it across the desktop."""
+    the window where it is, not hurl it across the desktop.
+
+    The drop is no longer immediate -- a few unreadable frames are ridden out --
+    but once the grace period is spent the drag ends as a release, and the
+    release reason is what keeps it away from the throw path.
+    """
     c, backend = build()
     now, x, y = drag(c)
     c.process(None, now + .033)
+    assert c.machine.down                                   # latched, mid-grace
+    assert backend.events.count('up') == 0
+    c.process(None, now + c.settings.drag_grace + .01)
     assert c.throw is None
     assert backend.events.count('up') == 1
+    assert c.machine.release_reason == C.gestures_module.RELEASE_TIMEOUT
 
 
 def test_pause_cancels_a_throw_in_flight():
@@ -224,10 +233,10 @@ def test_velocity_ignores_the_frames_just_before_release():
     c, _ = build()
     now = 10.0
     for i in range(10):                             # steady rightward sweep
-        c.trail.append((now - TRAIL_STEP*(9-i), (100 + i*40, 500)))
+        c.record_trail(now - TRAIL_STEP*(9-i), (100 + i*40, 500))
     # Two frames of sharp downward jerk, as the hand opens.
-    c.trail.append((now - .02, (460, 700)))
-    c.trail.append((now - .01, (460, 900)))
+    c.record_trail(now - .02, (460, 700))
+    c.record_trail(now - .01, (460, 900))
     velocity = c.fling_velocity(now)
     assert velocity[0] > 0
     assert abs(velocity[1]) < 50                    # the jerk was excluded
@@ -239,7 +248,7 @@ TRAIL_STEP = .018
 def test_too_few_samples_gives_no_velocity():
     c, _ = build()
     assert c.fling_velocity(10.0) is None
-    c.trail.append((9.9, (100, 100)))
+    c.record_trail(9.9, (100, 100))
     assert c.fling_velocity(10.0) is None
 
 
@@ -247,5 +256,5 @@ def test_a_stale_trail_gives_no_velocity():
     """Samples older than the window must not resurrect an ancient sweep."""
     c, _ = build()
     for i in range(5):
-        c.trail.append((5.0 + i*.02, (100 + i*50, 500)))
+        c.record_trail(5.0 + i*.02, (100 + i*50, 500))
     assert c.fling_velocity(10.0) is None

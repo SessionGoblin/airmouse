@@ -44,13 +44,20 @@ def test_isolated_tracking_jump_cannot_click():
 
 
 def test_nonfinite_tracking_releases_drag():
+    """A single unreadable frame is now ridden out; sustained garbage still
+    ends the drag, and still ends it as a release rather than as a throw."""
     c,b = pointing_controller()
     pinch = Features((.5,.5),.1,.8,False)
     c.process(pinch,.5)
     c.process(pinch,.6)
-    c.process(Features((math.nan,.5),.1,.8,False),.65)
+    bad = Features((math.nan,.5),.1,.8,False)
+    c.process(bad,.65)
+    assert c.machine.down                       # latched, not released
+    assert b.events[-1] != ('up',)
+    c.process(bad,.6+c.settings.drag_grace+.01)
     assert b.events[-1] == ('up',)
     assert not c.machine.armed
+    assert c.throw is None
 
 
 def test_slow_subpixel_motion_is_not_lost():

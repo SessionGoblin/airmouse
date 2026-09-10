@@ -133,10 +133,21 @@ class Window(QMainWindow):
         self.pointer_side.currentIndexChanged.connect(
             lambda: self.setting('pointer_side', self.pointer_side.currentData()))
         form.addRow('Pointer', self.pointer_side)
-        for key, label in [('left','Pinch click & drag'),('right','Middle pinch right click'),
-                           ('scroll','Two-finger scroll'),('fling','Fling on a fast release')]:
+        for key, label, tip in [
+                ('left','Pinch click & drag', ''),
+                ('right','Middle pinch right click', ''),
+                ('scroll','Two-finger scroll', ''),
+                ('fling','Fling on a fast release', ''),
+                ('precision_assist','Low-speed precision assist',
+                 'When your hand settles, the cursor moves a fraction as far for the '
+                 'same hand movement over a short range, which makes small targets '
+                 'easier to land on. Ordinary and fast movement are untouched: they '
+                 'use the plain absolute mapping, so Sensitivity means exactly what it '
+                 'always did and the same hand position always maps to the same place '
+                 'on screen.')]:
             box = QCheckBox(label)
             box.setChecked(getattr(self.settings,key))
+            if tip: box.setToolTip(tip)
             box.toggled.connect(lambda value, k=key: self.setting(k,value))
             form.addRow(box)
         calibration = QPushButton('Calibrate active region & gestures…')
@@ -474,6 +485,10 @@ class Window(QMainWindow):
             self.previous_state = state
         if self.debug.isChecked():
             text = f'FPS {fps:.1f} | cursor target {self.controller.target}\n'
+            # Ahead of the landmark readouts, and outside the features guard:
+            # a drag latched through a frame with no hand is exactly when this
+            # is worth reading, and exactly when there are no features.
+            text += '\n'.join(self.controller.telemetry.lines())+'\n'
             if features:
                 text += f'Pinch / palm: index {features.left:.3f}, middle {features.right:.3f}; scroll pose {features.scroll}\n'
                 from .gestures import joint_angle
