@@ -21,8 +21,16 @@ def _muted_native_stderr():
     InitGoogle, so GLOG_minloglevel/TF_CPP_MIN_LOG_LEVEL don't apply). Only the
     OS stderr fd is redirected, and only around setup; Python-level stderr and
     all runtime inference errors are untouched."""
+    # pythonw.exe has no console streams or valid stderr descriptor.
+    if sys.stderr is None:
+        yield
+        return
     sys.stderr.flush()
-    saved = os.dup(2)
+    try:
+        saved = os.dup(2)
+    except OSError:
+        yield
+        return
     devnull = os.open(os.devnull, os.O_WRONLY)
     try:
         os.dup2(devnull, 2)

@@ -60,7 +60,9 @@ def restore_dynamic_framerate(index, previous):
 class Camera:
     """Single latest-frame slot prevents inference from building a video backlog."""
     def __init__(self, index, width=640, height=480, hold_fps=True):
-        backend = cv2.CAP_V4L2 if sys.platform == 'linux' else cv2.CAP_ANY
+        # MSMF can take tens of seconds to renegotiate each webcam property.
+        # DirectShow avoids that startup delay on Windows USB cameras.
+        backend = {'linux': cv2.CAP_V4L2, 'win32': cv2.CAP_DSHOW}.get(sys.platform, cv2.CAP_ANY)
         self.cap = cv2.VideoCapture(index, backend)
         if not self.cap.isOpened():
             self.cap.release()

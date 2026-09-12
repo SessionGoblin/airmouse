@@ -455,7 +455,12 @@ class Window(QMainWindow):
             self.pause()
             self.status.setText(f'PAUSED • vision stalled for {age:.1f}s • control disabled')
         item = self.worker.take()
-        if not item: return
+        if not item:
+            stage = getattr(self.worker, 'startup_stage', '')
+            if stage:
+                elapsed = time.monotonic() - self.worker.started_at
+                self.status.setText(f'PAUSED • {stage}… {elapsed:.0f}s')
+            return
         frame, hands, features, state, fps, captured = item
         pointer = roles.by_role(hands, roles.POINTER)
         points = pointer.points if pointer else None

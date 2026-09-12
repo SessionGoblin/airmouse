@@ -1,5 +1,19 @@
 # Validation record
 
+## Windows setup — 2026-09-11
+
+- Installed the pinned dependencies and pytest in a repository-local Python 3.12.1 virtual environment; `pip check` passed.
+- Full suite: 290 passed, six Linux-only tests skipped (fcntl, permission helper, evdev).
+- Increased recorder detail-label space after its clipping regression test failed with Windows font metrics.
+- Downloaded the hand landmark model; model initialization and blank-frame inference passed.
+- Camera 0 processed 66 frames in the four-second inference smoke test; camera thread and model cleanup passed.
+- Native Qt window launched, was visually inspected, and closed cleanly. Pynput pointer backend and global hotkey listener initialized successfully; control remained paused.
+- Actual injected mouse movement, physical F8/F12 presses, interactive gesture feel, custom command bindings, and mixed-DPI mapping remain unverified.
+- Follow-up: fixed model initialization under `pythonw.exe`, where `sys.stderr` is `None`. The windowed launcher produced a real 1280 x 720 preview packet with a healthy hotkey listener and control paused. Regression suite: 292 passed, six Linux-only tests skipped.
+- Camera startup follow-up: the default MSMF backend took 32.08 seconds to configure and deliver its first 720p frame, versus 5.34 seconds with DirectShow. Windows now selects DirectShow. The visible GUI, launched through pythonw with preview started automatically, rendered its first 1280 x 720 result in 6.16 seconds with control paused. Startup status now names the pending step and elapsed time. Suite: 293 passed, six Linux-only tests skipped. First-frame FPS is not a steady-state performance measurement.
+
+## Original Linux validation
+
 Tested on the current Linux Wayland host on 2026-09-06.
 
 - Installed editable package with all declared dependencies in the repository's isolated Python 3.12.14 environment; dependency integrity check passed.

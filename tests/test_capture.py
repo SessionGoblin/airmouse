@@ -77,6 +77,16 @@ def test_hold_fps_off_does_not_touch_exposure(monkeypatch):
     assert restored == [] or all(p is None for _, p in restored)
 
 
+def test_windows_uses_directshow(monkeypatch):
+    monkeypatch.setattr(C.sys, 'platform', 'win32')
+    monkeypatch.setattr(cv2, 'VideoCapture', FakeCap)
+    cam = C.Camera(0, hold_fps=False)
+    try:
+        assert cam.cap.args == (0, cv2.CAP_DSHOW)
+    finally:
+        cam.close()
+
+
 def test_pin_dynamic_framerate_is_noop_off_linux(monkeypatch):
     monkeypatch.setattr(C.sys, 'platform', 'darwin')
     opened = []
@@ -85,6 +95,7 @@ def test_pin_dynamic_framerate_is_noop_off_linux(monkeypatch):
     assert opened == []
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Requires Linux fcntl')
 def test_pin_dynamic_framerate_clears_only_when_on(monkeypatch):
     monkeypatch.setattr(C.sys, 'platform', 'linux')
     current = {C.V4L2_CID_EXPOSURE_AUTO_PRIORITY: 1}
@@ -110,6 +121,7 @@ def test_pin_dynamic_framerate_clears_only_when_on(monkeypatch):
     assert current[C.V4L2_CID_EXPOSURE_AUTO_PRIORITY] == 1
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Requires Linux fcntl')
 def test_pin_dynamic_framerate_skips_when_already_off(monkeypatch):
     monkeypatch.setattr(C.sys, 'platform', 'linux')
     monkeypatch.setattr(os, 'open', lambda *a, **k: 7)
@@ -130,6 +142,7 @@ def test_pin_dynamic_framerate_skips_when_already_off(monkeypatch):
     assert sets == []
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Requires Linux fcntl')
 def test_pin_dynamic_framerate_ignores_missing_device(monkeypatch):
     monkeypatch.setattr(C.sys, 'platform', 'linux')
     monkeypatch.setattr(os, 'open', lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError('nope')))

@@ -7,6 +7,26 @@ A local-only webcam mouse for Linux, with a Qt desktop interface, MediaPipe hand
 
 ## Install and launch
 
+### Windows (PowerShell)
+
+From the repository directory with Python 3.11+ installed:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e '.[test]'
+.\.venv\Scripts\python.exe -m airmouse --download-model
+.\.venv\Scripts\python.exe -m airmouse --debug
+```
+
+Select **Start preview**, then explicitly enable control when ready. Windows
+uses pynput for desktop input and global F8/F12. The low-light frame-rate
+control is Linux-only. Windows webcam inference, GUI launch, and input
+initialization have been checked; interactive pointer behavior and mixed-DPI
+monitors still need validation. Run tests with
+`.\.venv\Scripts\python.exe -m pytest -q`; Linux-only checks are skipped.
+
+### Linux
+
 Python 3.11+ and a webcam are required. Tested here with Python 3.12.14 on Linux. On Debian/Ubuntu, a normal system-Python installation needs these build/runtime packages:
 
 ```sh

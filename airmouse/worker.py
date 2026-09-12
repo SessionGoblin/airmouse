@@ -59,6 +59,8 @@ class VisionWorker:
         self.latest = None
         self.error = None
         self.last_frame = time.monotonic()
+        self.started_at = self.last_frame
+        self.startup_stage = 'loading hand model'
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -68,8 +70,10 @@ class VisionWorker:
             settings = self.controller.settings
             tracker = HandTracker(hands=2 if settings.two_hands else 1)
             assigner = roles.RoleAssigner(pointer_side=settings.pointer_side)
+            self.startup_stage = 'opening and configuring camera'
             camera = Camera(settings.camera, settings.camera_width, settings.camera_height,
                             hold_fps=settings.hold_fps)
+            self.startup_stage = 'waiting for first camera frame'
             previous = time.monotonic()
             while not self.stop_event.is_set():
                 if camera.error: raise RuntimeError(camera.error)
@@ -93,6 +97,7 @@ class VisionWorker:
                 self.last_frame = now
                 with self.lock:
                     self.latest = (frame, hands, features, state, fps, captured)
+                    self.startup_stage = ''
                 if perf.PROFILER.enabled:
                     perf.PROFILER.record('infer_start_age', start_age*1000)
                     if inference: perf.PROFILER.record('inference', inference*1000)

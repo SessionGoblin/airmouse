@@ -1,4 +1,5 @@
 import os
+import sys
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import stat
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from airmouse import permissions
 app = QApplication.instance() or QApplication([])
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux permission helper')
 def test_helper_limits_grants_to_authenticated_user_and_selected_keyboard(monkeypatch):
     calls = []
     monkeypatch.setenv('PKEXEC_UID', '1000')
@@ -32,6 +34,7 @@ def test_helper_limits_grants_to_authenticated_user_and_selected_keyboard(monkey
     assert not calls
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Linux permission helper')
 def test_helper_refuses_without_pkexec_caller(monkeypatch):
     monkeypatch.delenv('PKEXEC_UID', raising=False)
     with pytest.raises(RuntimeError):

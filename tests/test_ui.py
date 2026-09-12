@@ -1,4 +1,6 @@
 import os
+import sys
+import pytest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
@@ -31,6 +33,7 @@ def test_calibration_rejects_invalid_hysteresis(monkeypatch,tmp_path):
     assert not (tmp_path/'settings.json').exists()
     dialog.close()
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='Requires Linux evdev')
 def test_wayland_hotkeys_scan_event_nodes_when_evdev_discovery_is_empty(monkeypatch):
     class FakeDevice:
         def __init__(self, path):

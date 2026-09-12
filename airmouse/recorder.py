@@ -64,7 +64,8 @@ def capture_layout(dialog, detail_text, ready='Get ready…'):
     detail = QLabel(detail_text)
     detail.setWordWrap(True)
     detail.setAlignment(Qt.AlignTop)
-    detail.setMinimumHeight(44)                 # two lines, so short text does not jump
+    # Reserve three wrapped lines, including native Windows font metrics.
+    detail.setMinimumHeight(max(60, 3 * detail.fontMetrics().lineSpacing()))
     layout.addWidget(detail)
     layout.addStretch(1)
     buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
